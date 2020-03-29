@@ -7,6 +7,7 @@ ARG HTSLIB_VERSION=1.8
 ARG BOWTIE2_VERSION=2.4.1
 ARG SAMBAMBA_VERSION=0.7.1
 ARG PICARD_VERSION=2.22.1
+ARG BEDTOOLS_VERSION=2.29.2
 
 # Peak calling tools
 ARG MACS2_VERSION=2.2.6
@@ -16,10 +17,10 @@ ARG PEPR_VERSION=1.1.24
 ARG MUSIC_COMMIT=b1caecdb164b1ab80acccb9463abe2526a56f69f
 
 
-# dependencies
-RUN apt-get update && \
+# dependencies and tools
+RUN apt-get update && apt-get install -y \
 	# general
-	apt-get install -y wget unzip \
+	wget curl unzip python3.8 python3.8-dev \
 	# fastqc
 	default-jre perl \
 	# multiqc
@@ -29,14 +30,32 @@ RUN apt-get update && \
 	# htslib
 	libbz2-dev liblzma-dev \
 	# picard
-	openjdk-8-jdk
+	openjdk-8-jdk \
+	# samtools
+	samtools \
+	# matplotlib
+	libfreetype6-dev
 
 # general
-RUN python3 -m pip install Cython
-# peak-callers
-RUN python3 -m pip install pysam \
-						   numpy \
-						   joblib
+RUN python3.8 -m pip install Cython
+
+RUN python3.8 -m pip install \
+	# tools
+	multiqc \
+	# peak calling deps
+	pysam \
+    numpy \
+    # used frameworks
+    joblib \
+    pybedtools
+
+WORKDIR /tools
+
+# bedtools
+RUN curl -SL https://github.com/arq5x/bedtools2/archive/v${BEDTOOLS_VERSION}.tar.gz | tar -xzv && \
+	cd bedtools2-${BEDTOOLS_VERSION} && \
+	make install && \
+	cd .. && rm -rf bedtools2-${BEDTOOLS_VERSION}
 
 # sambamba
 RUN wget https://github.com/biod/sambamba/releases/download/v${SAMBAMBA_VERSION}/sambamba-${SAMBAMBA_VERSION}-linux-static.gz && \
@@ -50,14 +69,8 @@ RUN wget https://github.com/biod/sambamba/releases/download/v${SAMBAMBA_VERSION}
 RUN wget -c --tries=0 --read-timeout=20 http://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v${FASTQC_VERSION}.zip && \
     unzip fastqc_v${FASTQC_VERSION}.zip && \
     rm fastqc_v${FASTQC_VERSION}.zip && \
-    chmod +x /FastQC/fastqc && \
-    ln -s /FastQC/fastqc /usr/local/bin/fastqc
-
-# samtools
-RUN apt install -y samtools
-
-# multiqc
-RUN pip3 install multiqc
+    chmod +x FastQC/fastqc && \
+    ln -s FastQC/fastqc /usr/local/bin/fastqc
 
 # chipmunk/tulip/chips - this tool has a lot of names
 # depends on the htslib
@@ -73,7 +86,7 @@ RUN wget https://github.com/samtools/htslib/releases/download/${HTSLIB_VERSION}/
 ENV PKG_CONFIG_PATH=${PKG_CONFIG_PATH}:/lib/pkgconfig
 ENV LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/lib
 
-
+# tulip simreads -p ENCFF981UIZ.bed -f hg19.fasta -t bed -c 5 -o out_sim --numreads 100000000 --model out.json -b ENCFF074TRC_sorted_markdup_filtered.bam --scale-outliers --thread 12
 #RUN	wget https://codeload.github.com/gymreklab/chips/tar.gz/v${CHIPS_VERSION} && \
 #	tar -xzvf v${CHIPS_VERSION} && \
 #	rm v${CHIPS_VERSION} && \
@@ -97,30 +110,28 @@ RUN wget https://github.com/broadinstitute/picard/releases/download/${PICARD_VER
 RUN wget https://github.com/BenLangmead/bowtie2/releases/download/v${BOWTIE2_VERSION}/bowtie2-${BOWTIE2_VERSION}-linux-x86_64.zip && \
 	unzip bowtie2-${BOWTIE2_VERSION}-linux-x86_64.zip && \
 	rm bowtie2-${BOWTIE2_VERSION}-linux-x86_64.zip && \
-    ln -s /bowtie2-${BOWTIE2_VERSION}-linux-x86_64/bowtie2-build /usr/local/bin/bowtie2-build && \
-    ln -s /bowtie2-${BOWTIE2_VERSION}-linux-x86_64/bowtie2 /usr/local/bin/bowtie2
+    ln -s $(pwd)/bowtie2-${BOWTIE2_VERSION}-linux-x86_64/bowtie2-build /usr/local/bin/bowtie2-build && \
+    ln -s $(pwd)/bowtie2-${BOWTIE2_VERSION}-linux-x86_64/bowtie2 /usr/local/bin/bowtie2
 
 
 # Peak-calling tools
-RUN python3 -m pip install macs2==${MACS2_VERSION} \
-						   epic2==${EPIC2_VERSION} \
-						   pepr==${PEPR_VERSION}
+RUN python3.8 -m pip install macs2==${MACS2_VERSION} \
+						     epic2==${EPIC2_VERSION} \
+						   	 pepr==${PEPR_VERSION}
 
 RUN wget https://excellmedia.dl.sourceforge.net/project/ranger/PeakRanger-${PEAKRANGER_VERSION}-Linux-x86_64.zip && \
 	unzip -d PeakRanger PeakRanger-${PEAKRANGER_VERSION}-Linux-x86_64.zip && \
-	rm -rf PeakRanger PeakRanger-${PEAKRANGER_VERSION}-Linux-x86_64.zip \
-	ln -s /PeakRanger/bin/peakranger /usr/local/bin/peakranger
+	rm -rf PeakRanger-${PEAKRANGER_VERSION}-Linux-x86_64.zip && \
+	ln -s $(pwd)/PeakRanger/bin/peakranger /usr/local/bin/peakranger
 
 RUN wget https://codeload.github.com/gersteinlab/MUSIC/zip/${MUSIC_COMMIT} && \
 	unzip -d MUSIC ${MUSIC_COMMIT} && \
-	rm -rf ${MUSIC_COMMIT}
+	rm -rf ${MUSIC_COMMIT} && \
 	cd MUSIC/MUSIC-${MUSIC_COMMIT} && \
 	make && \
 	ln -s $(pwd)/bin/MUSIC /usr/local/bin/MUSIC && \
 	chmod +x $(pwd)/bin/run_MUSIC.csh && \
 	ln -s $(pwd)/bin/run_MUSIC.csh /usr/local/bin/run_MUSIC.csh
-
-# tulip simreads -p ENCFF981UIZ.bed -f hg19.fasta -t bed -c 5 -o out_sim --numreads 100000000 --model out.json -b ENCFF074TRC_sorted_markdup_filtered.bam --scale-outliers --thread 12
 
 # SSH server
 ARG public_key

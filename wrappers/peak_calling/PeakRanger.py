@@ -14,7 +14,8 @@ def ranger(data: [str], control: [str], saveto: str,
                   --pval=0.001 \
                   --FDR=0.05 \
                   --verbose \
-                  --thread=12"""
+                  --thread=12
+    """
     pass
 
 
