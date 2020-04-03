@@ -1,49 +1,60 @@
 import os
-import sys
 import tempfile
-import logging as log
-import subprocess
-from subprocess import run
+import logging
+import asyncio
+from .utils import run
+
+logger = logging.getLogger(__name__)
 
 
-def qc_report(files: [str], saveto: str):
-    """Run samtools stats and samtools flagstats for each file. saveto a is destination folder"""
-    assert os.path.exists(saveto) and os.path.isdir(saveto)
-    for file in files:
-        assert ".bam" in file
-        to = os.path.split(file)[-1]
-        stats(file, os.path.join(saveto, to.replace(".bam", ".samtools-stats")))
-        flagstat(file, os.path.join(saveto, to.replace(".bam", ".samtools-flagstat")))
+async def faidx(file: str, saveto: str = None):
+    assert os.path.exists(file)
+    await run(["samtools", "faidx", file],
+              logbefore=f"samtools faidx {file}", logafter="fasta index building is finished")
+    if saveto:
+        os.renames(saveto, file + ".fai")
+    else:
+        saveto = file + ".fai"
+    return saveto
+
+
+async def merge(files: [str], threads: int = 1, saveto: str = None):
+    assert threads > 0 and all(os.path.exists(f) for f in files)
+    if len(files) == 1:
+        return files[0]
+    saveto = saveto if saveto else tempfile.mkstemp()[1]
+
+    await run(["samtools", "merge", "-f", f"--threads={threads}", saveto, *files], logger,
+              logbefore=f"start samtools merge for {files}, saved in {saveto}", logafter="samtools merge finished")
+    assert os.path.exists(saveto)
+    return saveto
 
 
 # samtools flagstat in.bam -> simple stats mapped/unmapped/passed etc
 # samtools stats -> statistics about alignment etc
-def stats(path: str, saveto: str = None):
+async def stats(path: str, saveto: str = None):
     assert os.path.isfile(path) and ".bam" in path
 
-    saveto = saveto if saveto else tempfile.mktemp()
-    log.debug(f"Start samtools stats for {path}")
-    result = run(["samtools", "stats", path],
-                 check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    stats = result.stdout.decode()
-    log.debug(stats)
-    log.debug("samtools stats finished")
+    saveto = saveto if saveto else tempfile.mkstemp()[1]
+    stats = await run(
+        ["samtools", "stats", path],
+        logger, logbefore=f"Start samtools stats for {path}", logafter="samtools stats finished"
+    )
 
     with open(saveto, 'w') as file:
         file.write(stats)
     return saveto
 
 
-def flagstat(path: str, saveto: str = None):
+async def flagstat(path: str, saveto: str = None):
     assert os.path.isfile(path) and ".bam" in path
 
-    saveto = saveto if saveto else tempfile.mktemp()
-    log.debug(f"Start samtools flagstat for {path}")
-    result = run(["samtools", "flagstat", path],
-                 check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    stats = result.stdout.decode()
-    log.debug(stats)
-    log.debug("samtools flagstat finished")
+    saveto = saveto if saveto else tempfile.mkstemp()[1]
+
+    stats = await run(
+        ["samtools", "flagstat", path],
+        logger, logbefore=f"Start samtools flagstat for {path}", logafter="samtools flagstat finished"
+    )
 
     with open(saveto, 'w') as file:
         file.write(stats)

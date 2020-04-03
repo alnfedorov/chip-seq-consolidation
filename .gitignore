@@ -1,0 +1,25 @@
+.idea/
+
+### Python ###
+# Byte-compiled / optimized / DLL files
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# pickled files
+*.pkl
+*.pth
+
+# C extensions
+*.so
+
+# IPython Notebook
+.ipynb_checkpoints
+
+# bed files
+cache/
+*.bed
+*.bed.gz
+
+# fasta files
+*.fasta

@@ -1,5 +1,7 @@
 FROM ubuntu:bionic
 
+ARG PYTHON=python3.8
+
 # General tools
 ARG FASTQC_VERSION=0.11.9
 ARG CHIPS_VERSION=2.0
@@ -7,6 +9,7 @@ ARG HTSLIB_VERSION=1.8
 ARG BOWTIE2_VERSION=2.4.1
 ARG SAMBAMBA_VERSION=0.7.1
 ARG PICARD_VERSION=2.22.1
+ARG BWA_VERSION=0.7.17
 ARG BEDTOOLS_VERSION=2.29.2
 
 # Peak calling tools
@@ -15,18 +18,18 @@ ARG EPIC2_VERSION=0.0.41
 ARG PEAKRANGER_VERSION=1.18
 ARG PEPR_VERSION=1.1.24
 ARG MUSIC_COMMIT=b1caecdb164b1ab80acccb9463abe2526a56f69f
-
+ARG IDR_VERSION=2.0.3
 
 # dependencies and tools
 RUN apt-get update && apt-get install -y \
 	# general
-	wget curl unzip python3.8 python3.8-dev \
+	wget curl unzip ${PYTHON} ${PYTHON}-dev \
 	# fastqc
 	default-jre perl \
 	# multiqc
 	python3-pip \
-	# tulip
-	pkg-config zlib1g-dev \
+	# chips
+	autoconf-archive build-essential pkg-config libtool autoconf automake zlib1g-dev \
 	# htslib
 	libbz2-dev liblzma-dev \
 	# picard
@@ -37,17 +40,15 @@ RUN apt-get update && apt-get install -y \
 	libfreetype6-dev
 
 # general
-RUN python3.8 -m pip install Cython
+RUN ${PYTHON} -m pip install Cython jupyter
 
-RUN python3.8 -m pip install \
+RUN ${PYTHON} -m pip install \
 	# tools
 	multiqc \
 	# peak calling deps
-	pysam \
-    numpy \
+	pysam numpy \
     # used frameworks
-    joblib \
-    pybedtools
+    joblib pybedtools seaborn
 
 WORKDIR /tools
 
@@ -70,7 +71,7 @@ RUN wget -c --tries=0 --read-timeout=20 http://www.bioinformatics.babraham.ac.uk
     unzip fastqc_v${FASTQC_VERSION}.zip && \
     rm fastqc_v${FASTQC_VERSION}.zip && \
     chmod +x FastQC/fastqc && \
-    ln -s FastQC/fastqc /usr/local/bin/fastqc
+    ln -s $(pwd)/FastQC/fastqc /usr/local/bin/fastqc
 
 # chipmunk/tulip/chips - this tool has a lot of names
 # depends on the htslib
@@ -86,17 +87,16 @@ RUN wget https://github.com/samtools/htslib/releases/download/${HTSLIB_VERSION}/
 ENV PKG_CONFIG_PATH=${PKG_CONFIG_PATH}:/lib/pkgconfig
 ENV LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/lib
 
-# tulip simreads -p ENCFF981UIZ.bed -f hg19.fasta -t bed -c 5 -o out_sim --numreads 100000000 --model out.json -b ENCFF074TRC_sorted_markdup_filtered.bam --scale-outliers --thread 12
-#RUN	wget https://codeload.github.com/gymreklab/chips/tar.gz/v${CHIPS_VERSION} && \
-#	tar -xzvf v${CHIPS_VERSION} && \
-#	rm v${CHIPS_VERSION} && \
-#	cd chips-${CHIPS_VERSIOn} && \
-#	./configure && \
-#	# hard-patch sources
-#	(echo "#include <functional>"; cat src/simulate_reads_main.cpp) > src/simulate_reads_main1.cpp  && \
-#	mv src/simulate_reads_main1.cpp src/simulate_reads_main.cpp && \
-#	make && \
-#	make install
+RUN	wget https://codeload.github.com/gymreklab/chips/tar.gz/v${CHIPS_VERSION} && \
+	tar -xzvf v${CHIPS_VERSION} && \
+	rm v${CHIPS_VERSION} && \
+	cd chips-${CHIPS_VERSION} && \
+	# hard-patch sources
+	sed -i '3i #include <random>' src/sequencer.h && \
+	sed -i '3i #include <random>' src/pulldown.h && \
+	autoreconf -if && ./configure && make install && \
+
+	cd .. && rm -rf chips-${CHIPS_VERSION}
 
 # picard
 RUN wget https://github.com/broadinstitute/picard/releases/download/${PICARD_VERSION}/picard.jar && \
@@ -105,7 +105,6 @@ RUN wget https://github.com/broadinstitute/picard/releases/download/${PICARD_VER
 	rm -rf picard.jar && \
 	chmod +x /usr/bin/picard
 
-
 # bowtie2 aligner
 RUN wget https://github.com/BenLangmead/bowtie2/releases/download/v${BOWTIE2_VERSION}/bowtie2-${BOWTIE2_VERSION}-linux-x86_64.zip && \
 	unzip bowtie2-${BOWTIE2_VERSION}-linux-x86_64.zip && \
@@ -113,9 +112,14 @@ RUN wget https://github.com/BenLangmead/bowtie2/releases/download/v${BOWTIE2_VER
     ln -s $(pwd)/bowtie2-${BOWTIE2_VERSION}-linux-x86_64/bowtie2-build /usr/local/bin/bowtie2-build && \
     ln -s $(pwd)/bowtie2-${BOWTIE2_VERSION}-linux-x86_64/bowtie2 /usr/local/bin/bowtie2
 
+# bwa aligner
+RUN wget https://github.com/lh3/bwa/releases/download/v${BWA_VERSION}/bwa-${BWA_VERSION}.tar.bz2 && \
+	tar -xjvf bwa-${BWA_VERSION}.tar.bz2 && \
+	cd bwa-${BWA_VERSION} && make && cp bwa /usr/local/bin/bwa && cd .. && \
+	rm -rf bwa-${BWA_VERSION}.tar.bz2 bwa-${BWA_VERSION}
 
 # Peak-calling tools
-RUN python3.8 -m pip install macs2==${MACS2_VERSION} \
+RUN ${PYTHON} -m pip install macs2==${MACS2_VERSION} \
 						     epic2==${EPIC2_VERSION} \
 						   	 pepr==${PEPR_VERSION}
 
@@ -132,6 +136,11 @@ RUN wget https://codeload.github.com/gersteinlab/MUSIC/zip/${MUSIC_COMMIT} && \
 	ln -s $(pwd)/bin/MUSIC /usr/local/bin/MUSIC && \
 	chmod +x $(pwd)/bin/run_MUSIC.csh && \
 	ln -s $(pwd)/bin/run_MUSIC.csh /usr/local/bin/run_MUSIC.csh
+
+RUN wget https://github.com/nboley/idr/archive/${IDR_VERSION}.zip && \
+	unzip ${IDR_VERSION}.zip && \
+	cd idr-${IDR_VERSION} && ${PYTHON} setup.py install && cd .. && \
+	rm -rf ${IDR_VERSION}.zip idr-${IDR_VERSION}
 
 # SSH server
 ARG public_key

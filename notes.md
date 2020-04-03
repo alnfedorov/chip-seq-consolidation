@@ -41,9 +41,12 @@ peaks. Use them as a ground true for simulations.
 3. Tooling for each peak-calling util
 
 What steps do I need to cover?
-1. Util to download and check md5sum
 2. Ability to parse arbitrary encode experiment(later)
 3. Utils to run peak-calling
 4. Utils to run bowtie2 aligning 
-
 5. End-to-end pipeline script
+
+TODO:
+1. Make peak-calling for the sake of humanity.
+
+
