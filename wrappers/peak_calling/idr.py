@@ -1,4 +1,5 @@
 import os
+import shutil
 import logging
 import tempfile
 from wrappers.utils import run
@@ -28,5 +29,5 @@ async def idr(files: [str], rankby: str, idrcutoff: float, format: str = None, s
     await run(cmd, logger, logbefore=f"Starting idr with cmd {' '.join(cmd)}", logafter="idr finished")
 
     if plotto:
-        os.rename(saveto+".png", plotto)
+        shutil.move(saveto+".png", plotto)
     return saveto

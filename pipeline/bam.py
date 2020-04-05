@@ -5,20 +5,18 @@ from wrappers import sambamba, picard, samtools, fastqc
 
 class filter:
     @staticmethod
-    async def toduplicates(bam: str, saveto: str, maxthreads: int, postsort: bool = True) -> str:
+    async def toduplicates(bam: str, saveto: str, maxthreads: int) -> str:
         duplicates = saveto
         assert await sambamba.filter(bam, sambamba.FILTER_KEEP_DUPS, maxthreads, saveto=duplicates) == duplicates
+        assert await sambamba.sort(duplicates, threads=maxthreads, inplace=True) == duplicates
         assert await picard.MarkDuplicates(duplicates, inplace=True) == duplicates
-        if postsort:
-            assert await sambamba.sort(duplicates, threads=maxthreads, inplace=True) == duplicates
         return duplicates
 
     @staticmethod
-    async def tounique(bam: str, saveto: str, maxthreads: int, postsort: bool = False) -> str:
+    async def tounique(bam: str, saveto: str, maxthreads: int) -> str:
         unique = saveto
         assert await sambamba.filter(bam, sambamba.FILTER_KEEP_UNIQUE, maxthreads, saveto=unique) == unique
-        if postsort:
-            assert await sambamba.sort(unique, threads=maxthreads, inplace=True) == unique
+        assert await sambamba.sort(unique, threads=maxthreads, inplace=True) == unique
         return saveto
 
 

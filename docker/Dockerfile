@@ -95,7 +95,6 @@ RUN	wget https://codeload.github.com/gymreklab/chips/tar.gz/v${CHIPS_VERSION} &&
 	sed -i '3i #include <random>' src/sequencer.h && \
 	sed -i '3i #include <random>' src/pulldown.h && \
 	autoreconf -if && ./configure && make install && \
-
 	cd .. && rm -rf chips-${CHIPS_VERSION}
 
 # picard

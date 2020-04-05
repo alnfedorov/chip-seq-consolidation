@@ -1,6 +1,9 @@
 import os
 import sys
 import logging
+import asyncio
+import itertools
+from typing import Awaitable
 from dataclasses import dataclass, field
 from .config import UNFILTERED_READS_PREFIX, UNIQUE_READS_PREFIX, DUPLICATED_READS_PREFIX, BROAD_HISTONE_MARKS
 from logging import Handler, LogRecord, Formatter
@@ -8,6 +11,18 @@ from logging import Handler, LogRecord, Formatter
 
 def is_broad(hm: str):
     return hm in BROAD_HISTONE_MARKS
+
+
+async def batched_gather(tasks: [Awaitable], batch_size: int):
+    results = []
+    while tasks:
+        batch = tasks[:batch_size]
+        if len(batch) == 0:
+            break
+        batch = await asyncio.gather(*batch)
+        tasks = tasks[batch_size:]
+        results.extend(batch)
+    return results
 
 
 def make_filename(*path: [str], mode: str, name: str, accession: str, format: str = "bam", reads: int = None):
@@ -24,7 +39,7 @@ def make_filename(*path: [str], mode: str, name: str, accession: str, format: st
 
 def config_logging(logfolder: str, level: str = "NOTSET"):
     assert os.path.isdir(logfolder)
-    logging.basicConfig(level=level)
+    logging.basicConfig(level=level, format="%(levelname)s: %(name)s: %(message)s")
     logger = logging.getLogger()
 
     handler = PerFileHandler(logfolder)
@@ -61,10 +76,13 @@ class BamMeta:
     target: str = field(hash=True, compare=True)
     accession: str = field(hash=True, compare=True)
     paired: bool = field(hash=True, compare=True)
+    readlen: int = field(hash=True, compare=True)
+    simulated: bool = False
+    reads: int = None
     # paths to the bam files
     unfiltered: str = None
     duplicated: str = None
-    unique: str = None
+    # unique: str = None
 
 
 @dataclass(frozen=False)
@@ -87,8 +105,8 @@ class ExperimentMeta:
     def _paths(self, bam_meta: [BamMeta], mode: str) -> [str]:
         if mode == "duplicated":
             return [m.duplicated for m in bam_meta]
-        elif mode == "unique":
-            return [m.unique for m in bam_meta]
+        # elif mode == "unique":
+        #     return [m.unique for m in bam_meta]
         else:
             raise ValueError(f"mode expected to be one of the (duplicated, unique), got {mode}")
 

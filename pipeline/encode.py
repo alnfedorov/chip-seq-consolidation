@@ -54,8 +54,7 @@ async def fetch(accession: str, experiment: str, is_control: bool, assembly: str
     path = await wget.wget(url, saveto=saveto)
     assert os.path.exists(path) and (saveto is None or saveto == path)
 
-    md5sum_downloaded = await run(["md5sum", path])
-    md5sum_downloaded = md5sum_downloaded.split('  ')[0]
+    md5sum_downloaded = (await run(["md5sum", path])).stdout.decode().split('  ')[0]
     assert md5sum == md5sum_downloaded, "md5 sum wasn't matched"
     return path
 

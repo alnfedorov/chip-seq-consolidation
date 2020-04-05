@@ -10,31 +10,46 @@ async def aln(fastq: str, index: str, saveto: str = None, quality_threshold: int
               max_seeddiff: int = 2, threads: int = 1) -> str:
     assert os.path.isfile(fastq) and seedlen > 0 and quality_threshold > 0 and \
            seedlen > 0 and max_seeddiff > 0 and threads >= 1
-    saveto = saveto if saveto is None else tempfile.mkstemp()[1]
-    cmd = ["bwa", "aln", "-q", quality_threshold, "-l", seedlen, "-k", max_seeddiff, "-t", threads, index, fastq]
+    saveto = saveto if saveto is not None else tempfile.mkstemp()[1]
+    cmd = [
+        "bwa", "aln", "-q", quality_threshold, "-l", seedlen, "-k", max_seeddiff, "-t", threads, index, fastq
+    ]
     cmd = [str(x) for x in cmd]
-    run(cmd, logger=logger, logbefore=f"Running bwa aln with cmd {' '.join(cmd)}", logafter="Alignment finished")
+    with open(saveto, 'w') as file:
+        await run(
+            cmd, logger, f"Running bwa aln with cmd {' '.join(cmd)}", "Alignment finished",
+            logstdout=False, stdout=file
+        )
     return saveto
 
 
-# ========================================
-# Map reads to create raw SAM file
-# ========================================
-# SAI_FILE_1="${OFPREFIX}.sai"
-# RAW_BAM_PREFIX="${OFPREFIX}.raw.srt"
-# RAW_BAM_FILE="${RAW_BAM_PREFIX}.bam" # To be stored
-# RAW_BAM_FILE_MAPSTATS="${RAW_BAM_PREFIX}.flagstat.qc" # QC File
-#
-# module add bwa/0.7.13
-# module add samtools/1.7
-#
-# bwa aln -q 5 -l 32 -k 2 -t ${NTHREADS} ${BWA_INDEX_NAME} ${FASTQ_FILE_1} > ${SAI_FILE_1}
-#
-# bwa samse ${BWA_INDEX_NAME} ${SAI_FILE_1} ${FASTQ_FILE_1} | samtools view -Su - | samtools sort -o ${RAW_BAM_FILE} -
-#
-# rm ${SAI_FILE_1}
-#
-# # Use bwa-mem for reads >= 70 bp
-# # bwa mem -M -t ${NTHREADS} ${BWA_INDEX_NAME} ${FASTQ_FILE_1} | samtools sort -o ${RAW_BAM_FILE} -
-#
-# samtools sort -n --threads 10 ${RAW_BAM_FILE} -O SAM  | SAMstats --sorted_sam_file -  --outf ${RAW_BAM_FILE_MAPSTATS}
+async def samse(index: str, sai: str, fastq: str, saveto: str = None):
+    """Single end aligner, should be used on top of the aln command"""
+    assert os.path.isfile(sai) and os.path.isfile(fastq)
+    saveto = saveto if saveto is not None else tempfile.mkstemp()[1]
+    cmd = ["bwa", "samse", index, sai, fastq]
+    with open(saveto, 'w') as file:
+        await run(
+            cmd, logger, f"Running bwa samse with cmd {' '.join(cmd)}", "Alignment finished",
+            logstdout=False, stdout=file
+        )
+    return saveto
+
+
+async def sampe(index: str, sai1: str, sai2: str, fastq1: str, fastq2: str, saveto: str = None):
+    """Paired end aligner, should be used on top of the aln command"""
+    assert os.path.isfile(sai1) and os.path.isfile(sai2) and os.path.isfile(fastq1) and os.path.isfile(fastq2)
+    saveto = saveto if saveto is None else tempfile.mkstemp()[1]
+    raise NotImplementedError()
+    cmd = ["bwa", "sampe", index, sai1, sai2, fastq1, fastq2, saveto]
+    await run(cmd, logger=logger, logbefore=f"Running bwa samse with cmd {' '.join(cmd)}",
+              logafter="Alignment finished")
+    return saveto
+
+
+async def mem(index, fastq1: str, fastq2: str = None, threads: int = 1):
+    assert os.path.exists(fastq1) and fastq2 is None or os.path.exists(fastq2)
+    assert threads >= 1
+    raise NotImplementedError()
+
+__all__ = [aln, sampe, samse, mem]

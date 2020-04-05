@@ -1,4 +1,5 @@
 import os
+import shutil
 import logging
 import tempfile
 from wrappers.utils import run
@@ -8,13 +9,17 @@ logger = logging.getLogger(__name__)
 
 async def predictd(file: str, rfile: str = "/dev/null", gsize: str = "hs"):
     cmd = ["macs2", "predictd", f"--gsize={gsize}", f"--rfile={rfile}", "-i", file]
-    results = await run(
+    results = (await run(
         cmd, logger, logbefore=f"Starting macs2 predictd for {file}", logafter=f"Finished macs2 predictd"
-    )
+    )).stderr.decode()
 
     # Search in the output for the # predicted fragment length is 215 bps
     results = results.split('\n')
     fragment = [line.strip() for line in results if "# predicted fragment length is" in line]
+    if len(fragment) != 1:
+        assert "Can't find enough pairs of symmetric peaks to build model!" in results[-2]
+        logger.warning("Can't determine fragment size, default value is used: 140")
+        return 140
     assert len(fragment) == 1, "macs2 predictd changed its output format"
     fragment = fragment[0].split(" ")
     assert fragment[-1] == "bps"
@@ -44,13 +49,11 @@ async def callpeak(data: [str], control: [str], pcutoff: float = None, fdrcutoff
     await run(cmd, logger, logbefore=f"Starting macs2 callpeack with cmd {' '.join(cmd)}", logafter="Finished macs2")
 
     if isbroad:
-        os.renames(os.path.join(output, "NA_peaks.broadPeak"), saveto)
+        shutil.move(os.path.join(output, "NA_peaks.broadPeak"), saveto)
     else:
-        os.renames(os.path.join(output, "NA_peaks.narrowPeak"), saveto)
+        shutil.move(os.path.join(output, "NA_peaks.narrowPeak"), saveto)
 
     # cleanup
-    for file in os.listdir(output):
-        os.remove(os.path.join(output, file))
-    os.removedirs(output)
+    shutil.rmtree(output)
 
     return saveto

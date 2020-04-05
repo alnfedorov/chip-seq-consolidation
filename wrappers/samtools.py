@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 import logging
 import asyncio
@@ -12,7 +13,7 @@ async def faidx(file: str, saveto: str = None):
     await run(["samtools", "faidx", file],
               logbefore=f"samtools faidx {file}", logafter="fasta index building is finished")
     if saveto:
-        os.renames(saveto, file + ".fai")
+        shutil.move(saveto, file + ".fai")
     else:
         saveto = file + ".fai"
     return saveto
@@ -36,10 +37,10 @@ async def stats(path: str, saveto: str = None):
     assert os.path.isfile(path) and ".bam" in path
 
     saveto = saveto if saveto else tempfile.mkstemp()[1]
-    stats = await run(
+    stats = (await run(
         ["samtools", "stats", path],
         logger, logbefore=f"Start samtools stats for {path}", logafter="samtools stats finished"
-    )
+    )).stdout.decode()
 
     with open(saveto, 'w') as file:
         file.write(stats)
@@ -51,10 +52,10 @@ async def flagstat(path: str, saveto: str = None):
 
     saveto = saveto if saveto else tempfile.mkstemp()[1]
 
-    stats = await run(
+    stats = (await run(
         ["samtools", "flagstat", path],
         logger, logbefore=f"Start samtools flagstat for {path}", logafter="samtools flagstat finished"
-    )
+    )).stdout.decode()
 
     with open(saveto, 'w') as file:
         file.write(stats)
