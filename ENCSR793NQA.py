@@ -22,3 +22,7 @@ experiments = [
     ExperimentMeta("breplica2", TARGERT, ACCESSION, [bam["ENCFF825SKJ"]], [bam["ENCFF941KVW"], bam["ENCFF379ZDL"]]),
 ]
 asyncio.run(endtoend.run(ROOT, experiments))
+
+# 1. Делать markdup через sambamba
+# 2. paired-end сортировать по имени перед и пулить риды которые парные bedpe
+# 3. https://www.biostars.org/p/149119/

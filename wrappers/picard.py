@@ -12,7 +12,7 @@ async def MarkDuplicates(path: str, saveto: str = None, inplace: bool = False):
 
     saveto = saveto if saveto and not inplace else tempfile.mkstemp()[1]
     await run([
-            "picard", "MarkDuplicates", f"I={path}", f"O={saveto}", f"M=/dev/null", "VALIDATION_STRINGENCY=LENIENT"
+            "picard", "MarkDuplicates", f"I={path}", f"O={saveto}", f"M=/dev/null", "VALIDATION_STRINGENCY=LENIENT",
         ], logger, logbefore=f"Start picard MarkDuplicates for {path}", logafter="MarkDuplicates finished"
     )
     if inplace:

@@ -8,8 +8,8 @@ class filter:
     async def toduplicates(bam: str, saveto: str, maxthreads: int) -> str:
         duplicates = saveto
         assert await sambamba.filter(bam, sambamba.FILTER_KEEP_DUPS, maxthreads, saveto=duplicates) == duplicates
-        assert await sambamba.sort(duplicates, threads=maxthreads, inplace=True) == duplicates
         assert await picard.MarkDuplicates(duplicates, inplace=True) == duplicates
+        assert await sambamba.sort(duplicates, threads=maxthreads, inplace=True) == duplicates
         return duplicates
 
     @staticmethod

@@ -13,9 +13,11 @@ def is_broad(hm: str):
     return hm in BROAD_HISTONE_MARKS
 
 
-async def batched_gather(tasks: [Awaitable], batch_size: int):
+async def batched_gather(tasks: [Awaitable], batch_size: int, verbose=False):
     results = []
     while tasks:
+        if verbose:
+            print("tasks left ", len(tasks))
         batch = tasks[:batch_size]
         if len(batch) == 0:
             break

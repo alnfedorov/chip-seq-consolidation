@@ -7,11 +7,14 @@ from .utils import run, replace_bam
 
 logger = logging.getLogger(__name__)
 FILTER_KEEP_DUPS = "mapping_quality >= 1 " \
-                   "and not (unmapped or secondary_alignment) " \
+                   "and not (supplementary or unmapped or secondary_alignment or failed_quality_control or chimeric) " \
                    "and not ([SA] != null)"
 FILTER_KEEP_UNIQUE = "mapping_quality >= 1 " \
-                     "and not (unmapped or secondary_alignment or duplicate) " \
+                     "and not (supplementary or unmapped or secondary_alignment or failed_quality_control or chimeric or duplicate) " \
                      "and not ([SA] != null)"
+
+DUPLICATED_FILTER_KEEP_DUPS = FILTER_KEEP_DUPS + " and proper_pair and not (mate_is_unmapped or mate_is_reverse_strand)"
+DUPLICATED_FILTER_KEEP_UNIQUE = FILTER_KEEP_UNIQUE + " and proper_pair and not (mate_is_unmapped or mate_is_reverse_strand)"
 
 
 async def subsample(bam: str, fraction: float = None, reads: int = None, saveto: str = None, threads: int = 1):
@@ -104,7 +107,7 @@ async def filter(path: str, rule: str, threads: int = 1, saveto: str = None, inp
     await run(
         [
             "sambamba", "view", "--with-header", "--show-progress", "--compression-level=9",
-            f"--nthreads={threads}", f"--filter={rule}", "--format=bam", f"--output-filename={saveto}", path
+            f"--nthreads={threads}", f'--filter="{rule}"', "--format=bam", f"--output-filename={saveto}", path
         ], logger, logbefore=f"Start sambamba view for {path} with rule {rule}", logafter="view finished"
     )
 

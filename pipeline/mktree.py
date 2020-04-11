@@ -13,7 +13,6 @@ def mktree(root: str):
         │   ├── qc
         │   ├── peak-calling
         │   ├── unfiltered-bam
-        │   └── unique-bam
         └── simulated
             └── chips
                 ├── models
@@ -23,7 +22,6 @@ def mktree(root: str):
                 │   ├── qc
                 │   ├── peak-calling
                 │   ├── unfiltered-bam
-                │   └── unique-bam
                 ├── q0.5
                 .......
             └── subsample
@@ -37,7 +35,7 @@ def mktree(root: str):
         for d in (LOGS_DIR, PEAK_CALLING_DIR, BAM_QC_DIR):
             d = os.path.join(folder, d)
             os.makedirs(d, exist_ok=True)
-        for d in (UNFILTERED_READS_DIR, DUPLICATED_READS_DIR, UNIQUE_READS_DIR):
+        for d in (UNFILTERED_READS_DIR, DUPLICATED_READS_DIR):
             d = os.path.join(folder, d)
             os.makedirs(d, exist_ok=True)
 

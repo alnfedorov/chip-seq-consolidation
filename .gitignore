@@ -23,3 +23,5 @@ cache/
 
 # fasta files
 *.fasta
+
+notes.md

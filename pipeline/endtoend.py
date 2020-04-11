@@ -19,8 +19,9 @@ async def _process_bam(expfolder: str, experiment: str, meta: BamMeta, maxthread
         meta.unfiltered = make_filename(unfiltered, mode="unfiltered", name=meta.name, accession=meta.accession,
                                         reads=meta.reads)
     if not meta.simulated:
+        existed = os.path.exists(meta.unfiltered)
         await encode.fetch(meta.accession, experiment, meta.target == "control", ASSEMBLY, saveto=meta.unfiltered)
-        if not os.path.exists(meta.unfiltered) or force:
+        if not existed or force:
             coro.append(asyncio.create_task(
                 bam.qc(meta.unfiltered, saveto=qc, doflagstats=True, dostats=True, dofastqc=True)
             ))

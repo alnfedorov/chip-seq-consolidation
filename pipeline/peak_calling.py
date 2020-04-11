@@ -78,7 +78,7 @@ async def _run_macs2(experiment: ExperimentMeta, saveto: str, fdrcutoff: float, 
     if not os.path.exists(file) or force:
         await macs2.callpeak(
             experiment.alltreatment(mode), experiment.allcontrol(mode), fdrcutoff=fdrcutoff,
-            isbroad=isbroad, saveto=file, format='AUTO' if not experiment.paired_data else 'BAMPE'
+            isbroad=isbroad, saveto=file, format='BAMPE' if experiment.paired_data else 'AUTO'
         )
     assert os.path.isfile(file)
     return file
@@ -86,7 +86,7 @@ async def _run_macs2(experiment: ExperimentMeta, saveto: str, fdrcutoff: float, 
 
 async def _run_epic2(experiment: ExperimentMeta, saveto: str, fdrcutoff: float, force: bool):
     assert not experiment.paired_data, "run_epic2 is not implemented to BAM->BEDPE on-the-fly conversion"
-    mode = 'unique'
+    mode = 'duplicated'
     file = os.path.join(saveto, f"epic2-{experiment.name}.broadPeak")
     if not os.path.isfile(file) or force:
         await epic2.epic2(experiment.alltreatment(mode), experiment.allcontrol(mode), saveto=file, fdrcutoff=fdrcutoff)
@@ -95,7 +95,7 @@ async def _run_epic2(experiment: ExperimentMeta, saveto: str, fdrcutoff: float, 
 
 
 async def _run_peakranger(experiment: ExperimentMeta, saveto: str, fdrcutoff: float, threads: int, force: bool):
-    mode = 'unique'
+    mode = 'duplicated'
     treatment, control = experiment.alltreatment(mode), experiment.allcontrol(mode)
 
     if is_broad(experiment.target):
