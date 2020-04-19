@@ -1,22 +1,29 @@
 import os
 import asyncio
-from wrappers import sambamba, picard, samtools, fastqc
+from wrappers import sambamba, samtools, fastqc
 
 
 class filter:
     @staticmethod
-    async def toduplicates(bam: str, saveto: str, maxthreads: int) -> str:
+    async def toduplicates(bam: str, paired: bool, markdup: bool, saveto: str, maxthreads: int) -> str:
         duplicates = saveto
-        assert await sambamba.filter(bam, sambamba.FILTER_KEEP_DUPS, maxthreads, saveto=duplicates) == duplicates
-        assert await picard.MarkDuplicates(duplicates, inplace=True) == duplicates
-        assert await sambamba.sort(duplicates, threads=maxthreads, inplace=True) == duplicates
+        rule = sambamba.PAIRED_FILTER_KEEP_DUPS if paired else sambamba.FILTER_KEEP_DUPS
+        if markdup:
+            assert await sambamba.markdup(bam, maxthreads, saveto=duplicates) == duplicates
+            assert await sambamba.sort(duplicates, filter=rule, threads=maxthreads, inplace=True) == duplicates
+        else:
+            assert await sambamba.sort(bam, filter=rule, threads=maxthreads, saveto=duplicates) == duplicates
         return duplicates
 
     @staticmethod
-    async def tounique(bam: str, saveto: str, maxthreads: int) -> str:
+    async def tounique(bam: str, paired: bool, markdup: str, saveto: str, maxthreads: int) -> str:
         unique = saveto
-        assert await sambamba.filter(bam, sambamba.FILTER_KEEP_UNIQUE, maxthreads, saveto=unique) == unique
-        assert await sambamba.sort(unique, threads=maxthreads, inplace=True) == unique
+        rule = sambamba.PAIRED_FILTER_KEEP_UNIQUE if paired else sambamba.FILTER_KEEP_UNIQUE
+        if markdup:
+            assert await sambamba.markdup(bam, maxthreads, saveto=unique) == unique
+            assert await sambamba.sort(unique, filter=rule, threads=maxthreads, inplace=True) == unique
+        else:
+            assert await sambamba.sort(bam, filter=rule, threads=maxthreads, saveto=unique) == unique
         return saveto
 
 

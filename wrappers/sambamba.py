@@ -9,12 +9,10 @@ logger = logging.getLogger(__name__)
 FILTER_KEEP_DUPS = "mapping_quality >= 1 " \
                    "and not (supplementary or unmapped or secondary_alignment or failed_quality_control or chimeric) " \
                    "and not ([SA] != null)"
-FILTER_KEEP_UNIQUE = "mapping_quality >= 1 " \
-                     "and not (supplementary or unmapped or secondary_alignment or failed_quality_control or chimeric or duplicate) " \
-                     "and not ([SA] != null)"
+FILTER_KEEP_UNIQUE = FILTER_KEEP_DUPS + " and not duplicate"
 
-DUPLICATED_FILTER_KEEP_DUPS = FILTER_KEEP_DUPS + " and proper_pair and not (mate_is_unmapped or mate_is_reverse_strand)"
-DUPLICATED_FILTER_KEEP_UNIQUE = FILTER_KEEP_UNIQUE + " and proper_pair and not (mate_is_unmapped or mate_is_reverse_strand)"
+PAIRED_FILTER_KEEP_DUPS = FILTER_KEEP_DUPS + " and proper_pair"
+PAIRED_FILTER_KEEP_UNIQUE = FILTER_KEEP_UNIQUE + " and proper_pair"
 
 
 async def subsample(bam: str, fraction: float = None, reads: int = None, saveto: str = None, threads: int = 1):
@@ -65,7 +63,8 @@ async def fromsam(path: str, threads: int = 1, saveto: str = None):
     return saveto
 
 
-async def sort(path: str, saveto: str = None, threads: int = 1, byname: bool = False, inplace: bool = False):
+async def sort(path: str, saveto: str = None, threads: int = 1, byname: bool = False, match_mates: bool = None,
+               filter: str = None, inplace: bool = False):
     assert os.path.isfile(path)
     assert threads > 0
 
@@ -74,6 +73,10 @@ async def sort(path: str, saveto: str = None, threads: int = 1, byname: bool = F
     cmd = ["sambamba", "sort", f"--nthreads={threads}", "--show-progress", "--compression-level=9", f"--out={saveto}"]
     if byname:
         cmd.append("--sort-by-name")
+    if match_mates:
+        cmd.append("--match-mates")
+    if filter:
+        cmd.append(f'--filter={filter}')
     cmd.append(path)
     await run(cmd, logger, logbefore=f"Start sambamba sort for {path}", logafter="Sort finished")
     if inplace:
@@ -84,8 +87,6 @@ async def sort(path: str, saveto: str = None, threads: int = 1, byname: bool = F
 async def markdup(path: str, threads: int = 1, saveto: str = None, inplace: bool = False):
     assert os.path.isfile(path)
     assert threads > 0
-
-    # sambamba markdup -t 12 -l 9 --show-progress IN.bam OUT.bam
     saveto = saveto if saveto and not inplace else tempfile.mkstemp()[1]
     await run(
         [
@@ -107,7 +108,7 @@ async def filter(path: str, rule: str, threads: int = 1, saveto: str = None, inp
     await run(
         [
             "sambamba", "view", "--with-header", "--show-progress", "--compression-level=9",
-            f"--nthreads={threads}", f'--filter="{rule}"', "--format=bam", f"--output-filename={saveto}", path
+            f"--nthreads={threads}", f'--filter={rule}', "--format=bam", f"--output-filename={saveto}", path
         ], logger, logbefore=f"Start sambamba view for {path} with rule {rule}", logafter="view finished"
     )
 

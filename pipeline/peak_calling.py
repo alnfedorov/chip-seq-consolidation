@@ -5,7 +5,8 @@ from multiprocessing import cpu_count
 from wrappers.peak_calling import macs2, epic2, PePr, PeakRanger, idr
 from pybedtools import BedTool, Interval
 from utils.bed import compute_conservative_regions
-from .utils import ExperimentMeta, BamMeta, is_broad
+from .utils import ExperimentMeta, is_broad
+from wrappers.cookbook import bam_to_bedpe
 from .config import SOFT_FDR_CUTOFF, IDR_CUTOFF, CONSENSUS_FILENAME, BLACKLISTED_REGIONS
 
 
@@ -71,7 +72,7 @@ async def _run_idr(files: [Awaitable[str]], saveto: str, rankby: str, idrcutoff:
 
 
 async def _run_macs2(experiment: ExperimentMeta, saveto: str, fdrcutoff: float, force: bool):
-    mode = 'duplicated'
+    mode = 'duplicated'     # macs2 automatically handles duplicates in a smart way
     isbroad = is_broad(experiment.target)
     postfix = "broadPeak" if isbroad else "narrowPeak"
     file = os.path.join(saveto, f"macs2-{experiment.name}.{postfix}")
@@ -84,18 +85,23 @@ async def _run_macs2(experiment: ExperimentMeta, saveto: str, fdrcutoff: float, 
     return file
 
 
-async def _run_epic2(experiment: ExperimentMeta, saveto: str, fdrcutoff: float, force: bool):
-    assert not experiment.paired_data, "run_epic2 is not implemented to BAM->BEDPE on-the-fly conversion"
-    mode = 'duplicated'
+async def _run_epic2(experiment: ExperimentMeta, saveto: str, fdrcutoff: float, threads: int, force: bool):
+    mode = 'unique'
     file = os.path.join(saveto, f"epic2-{experiment.name}.broadPeak")
     if not os.path.isfile(file) or force:
-        await epic2.epic2(experiment.alltreatment(mode), experiment.allcontrol(mode), saveto=file, fdrcutoff=fdrcutoff)
+        treatment, control = experiment.alltreatment(mode), experiment.allcontrol(mode)
+        if experiment.paired_data:
+            pthreads = max(1, threads // (len(treatment) + len(control)))
+            coro = [bam_to_bedpe(bam, maxthreads=pthreads) for bam in treatment + control]
+            files = asyncio.gather(*coro)
+            treatment, control = files[:len(treatment)], files[len(treatment):]
+        await epic2.epic2(treatment, control, experiment.paired_data, saveto=file, fdrcutoff=fdrcutoff)
     assert os.path.isfile(file)
     return file
 
 
 async def _run_peakranger(experiment: ExperimentMeta, saveto: str, fdrcutoff: float, threads: int, force: bool):
-    mode = 'duplicated'
+    mode = 'unique'
     treatment, control = experiment.alltreatment(mode), experiment.allcontrol(mode)
 
     if is_broad(experiment.target):
@@ -114,6 +120,7 @@ async def _run_peakranger(experiment: ExperimentMeta, saveto: str, fdrcutoff: fl
 async def _run_pepr(experiments: [ExperimentMeta], saveto: str, fdrcutoff: float, threads: int, force: bool):
     assert len(experiments) >= 2, "PePr works only with replicated ChIP-seq experiments"
     assert all(experiments[0].paired_data == e.paired_data and experiments[0].target == e.target for e in experiments)
+    is_paired = experiments[0].paired_data
     threads = cpu_count() if threads < 0 else max(1, threads)
     peaktype = "broad" if is_broad(experiments[0].target) else "sharp"
     file = os.path.join(saveto, f"pepr-{'+'.join(e.name for e in experiments)}.broadPeak")
@@ -123,7 +130,6 @@ async def _run_pepr(experiments: [ExperimentMeta], saveto: str, fdrcutoff: float
                              sum([e.allcontrol(mode) for e in experiments], [])
         treatment, control = list(set(treatment)), list(set(control))
 
-        is_paired = experiments[0].paired_data
         format = "bam" if not is_paired else "bampe"
         await PePr.PePr(treatment, control, peaktype, saveto=file, threads=threads, format=format, fdrcutoff=fdrcutoff)
     assert os.path.exists(file)

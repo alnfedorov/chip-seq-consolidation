@@ -1,11 +1,12 @@
 import os
 import asyncio
-from .mktree import mktree
+from .path import mktree
 from . import encode, bam, simulations
+from wrappers import cookbook
 from .peak_calling import call_peaks
 from .utils import ExperimentMeta, BamMeta, make_filename, config_logging
-from .config import ORIGINAL_DIR, UNFILTERED_READS_DIR, DUPLICATED_READS_DIR, UNIQUE_READS_DIR, ASSEMBLY, \
-                    PEAK_CALLING_DIR, SIMULATED_DIR, CHIPS_DIR, BAM_QC_DIR, GENOME_FASTA, LOGS_DIR, SUBSAMPLE_DIR
+from .config import ORIGINAL_DIR, UNFILTERED_READS_DIR, DUPLICATED_READS_DIR, UNIQUE_READS_DIR, ASSEMBLY, CHROMINFO, \
+                    PEAK_CALLING_DIR, SIMULATED_DIR, BIGWIG_DIR, BAM_QC_DIR, GENOME_FASTA, LOGS_DIR, SUBSAMPLE_DIR
 
 
 async def _process_bam(expfolder: str, experiment: str, meta: BamMeta, maxthreads: int, force: bool):
@@ -26,24 +27,29 @@ async def _process_bam(expfolder: str, experiment: str, meta: BamMeta, maxthread
                 bam.qc(meta.unfiltered, saveto=qc, doflagstats=True, dostats=True, dofastqc=True)
             ))
 
-    # Mark duplicates, sort and filter. (Duplicates are kept)
+    # Mark duplicates, sort and filter.
     if meta.duplicated is None:
         meta.duplicated = make_filename(duplicated, mode="duplicated", name=meta.name, accession=meta.accession,
                                         reads=meta.reads)
     if not os.path.exists(meta.duplicated) or force:
-        await bam.filter.toduplicates(meta.unfiltered, saveto=meta.duplicated, maxthreads=maxthreads)
+        await bam.filter.toduplicates(meta.unfiltered, meta.paired, saveto=meta.duplicated, maxthreads=maxthreads)
         coro.append(asyncio.create_task(
             bam.qc(meta.duplicated, saveto=qc, doflagstats=True, dostats=True, dofastqc=False)
         ))
 
     # Remove duplicates and keep only unique reads
-    # if meta.unique is None:
-    #     meta.unique = make_filename(unique, mode="unique", name=meta.name, accession=meta.accession, reads=meta.reads)
-    # if not os.path.exists(meta.unique) or force:
-    #     await bam.filter.tounique(meta.duplicated, saveto=meta.unique, maxthreads=maxthreads)
-    #     coro.append(asyncio.create_task(
-    #         bam.qc(meta.unique, saveto=qc, doflagstats=True, dostats=True, dofastqc=False)
-    #     ))
+    if meta.unique is None:
+        meta.unique = make_filename(unique, mode="unique", name=meta.name, accession=meta.accession, reads=meta.reads)
+    if not os.path.exists(meta.unique) or force:
+        await bam.filter.tounique(meta.duplicated, meta.paired, saveto=meta.unique, maxthreads=maxthreads)
+        coro.append(asyncio.create_task(
+            bam.qc(meta.unique, saveto=qc, doflagstats=True, dostats=True, dofastqc=False)
+        ))
+
+    # Make bigwig file from the unique bam
+    bigwig = make_filename(expfolder, BIGWIG_DIR, mode="unique", name=meta.name, accession=meta.accession, format=".bw")
+    if not os.path.exists(bigwig) or force:
+        await cookbook.bam_to_bigwig(meta.unique, CHROMINFO, bigwig)
 
     await asyncio.gather(*coro)
 
@@ -52,8 +58,8 @@ async def _process_experiments(expfolder: str, experiments: [ExperimentMeta], ma
     # Filter and markdup files
     coro = [(exp.accession, meta) for exp in experiments for meta in exp.treatment + exp.control]
     coro = set(coro)    # filter possible duplicates in BamMeta objects
-    # threads = max(1, int(round(len(coro) / maxthreads)))
-    threads = maxthreads
+    threads = int(round(maxthreads / len(coro))) + 2
+    # threads = maxthreads
     coro = [_process_bam(expfolder, accession, meta, maxthreads=threads, force=force) for accession, meta in coro]
     await asyncio.gather(*coro)
 

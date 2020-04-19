@@ -15,11 +15,18 @@ async def run(cmd: [str], logger: logging.Logger = None, logbefore: str = None, 
     if logbefore:
         logger.debug(logbefore)
     try:
+        # It is not the best idea, but asyncio subprocesses API is not convinient
         result = await asyncio.get_event_loop().run_in_executor(
             None, lambda: subprocess.run(cmd, check=True, stdout=stdout, stderr=stderr))
     except CalledProcessError as e:
+        print(" ".join(cmd))
         if e.stdout is not None:
             logger.error(e.stdout.decode())
+        if e.stderr is not None:
+            logger.error(e.stderr.decode())
+        raise e
+    except Exception as e:
+        print("ASDADADADADS ", e)
         raise e
 
     if logstdout and result.stdout is not None:

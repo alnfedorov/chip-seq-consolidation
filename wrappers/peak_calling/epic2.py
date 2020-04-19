@@ -10,9 +10,11 @@ from wrappers.peak_calling.utils import _zero_significance_filler
 logger = logging.getLogger(__name__)
 
 
-async def epic2(treatment: [str], control: [str], binsize: int = 200, gapsallowed: int = 3,
+async def epic2(treatment: [str], control: [str], ispaired: bool, binsize: int = 200, gapsallowed: int = 3,
                 fragment_size: int = None, saveto: str = None, fdrcutoff: float = 0.05, genome: str = 'hg19'):
-    if fragment_size is None:
+    if ispaired:
+        assert fragment_size is None
+    elif fragment_size is None:
         # estimate as mean fragment size across libraries
         size = [predictd(file) for file in treatment]
         size = await asyncio.gather(*size)
@@ -62,9 +64,14 @@ async def epic2(treatment: [str], control: [str], binsize: int = 200, gapsallowe
 async def epic2_(treatment: [str], control: [str], binsize: int, gapsallowed: int, fragment_size: int, saveto: str,
                  fdrcutoff: float, genome: str):
     cmd = [
-        "epic2", "-t", *treatment, "-c", *control,
-        f"--genome={genome}", f"--bin-size={binsize}", f"--gaps-allowed={gapsallowed}",
-        f"--fragment-size={fragment_size}", f"--false-discovery-rate-cutoff={fdrcutoff}", f"--output={saveto}",
+        "epic2", "-t", *treatment, "-c", *control, f"--genome={genome}", f"--false-discovery-rate-cutoff={fdrcutoff}",
+        f"--output={saveto}",
     ]
+    if binsize:
+        cmd.append(f"--bin-size={binsize}")
+    if gapsallowed:
+        cmd.append(f"--gaps-allowed={gapsallowed}")
+    if fragment_size:
+        cmd.append(f"--fragment-size={fragment_size}")
     await run(cmd, logger, logbefore=f"Starting SICER(epic2) with cmd {' '.join(cmd)}", logafter="Finished SICER")
     return saveto

@@ -30,6 +30,7 @@ CONSENSUS_FILENAME = "consensus.bed"
 
 ASSEMBLY = 'hg19'
 GENOME_FASTA = "/data/hg19/hg19.fasta"
+CHROMINFO = "/data/hg19/chromInfo.txt"
 BWA_GENOME_INDEX = "/data/hg19/bwa-index/hg19.fasta"
 
 # See https://github.com/Boyle-Lab/Blacklist/blob/v2.0/lists/hg19-blacklist.v2.bed.gz
@@ -46,6 +47,8 @@ UNIQUE_READS_PREFIX = 'unique'
 UNFILTERED_READS_DIR = f'{UNFILTERED_READS_PREFIX}-bam'
 DUPLICATED_READS_DIR = f'{DUPLICATED_READS_PREFIX}-bam'
 UNIQUE_READS_DIR = f'{UNIQUE_READS_PREFIX}-bam'
+
+BIGWIG_DIR = "big-wig"
 
 SIMULATED_DIR = "simulated"
 CHIPS_DIR = "chips"
