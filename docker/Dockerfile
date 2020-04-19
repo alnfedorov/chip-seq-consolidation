@@ -40,15 +40,15 @@ RUN apt-get update && apt-get install -y \
 	libfreetype6-dev
 
 # general
-RUN ${PYTHON} -m pip install Cython jupyter
+RUN ${PYTHON} -m pip install Cython numpy jupyter
 
 RUN ${PYTHON} -m pip install \
 	# tools
 	multiqc \
 	# peak calling deps
-	pysam numpy \
+	pysam \
     # used frameworks
-    joblib pybedtools seaborn
+    joblib pybedtools seaborn pyBigWig torch
 
 WORKDIR /tools
 
@@ -116,6 +116,16 @@ RUN wget https://github.com/lh3/bwa/releases/download/v${BWA_VERSION}/bwa-${BWA_
 	tar -xjvf bwa-${BWA_VERSION}.tar.bz2 && \
 	cd bwa-${BWA_VERSION} && make && cp bwa /usr/local/bin/bwa && cd .. && \
 	rm -rf bwa-${BWA_VERSION}.tar.bz2 bwa-${BWA_VERSION}
+
+# bedGraphToBigWig
+RUN wget http://hgdownload.cse.ucsc.edu/admin/exe/linux.x86_64/bedGraphToBigWig && \
+	chmod a+x bedGraphToBigWig && \
+	ln -s $(pwd)/bedGraphToBigWig /usr/local/bin/bedGraphToBigWig
+
+# bedClip
+RUN wget http://hgdownload.cse.ucsc.edu/admin/exe/linux.x86_64/bedClip && \
+	chmod a+x bedClip && \
+	ln -s $(pwd)/bedClip /usr/local/bin/bedClip
 
 # Peak-calling tools
 RUN ${PYTHON} -m pip install macs2==${MACS2_VERSION} \
