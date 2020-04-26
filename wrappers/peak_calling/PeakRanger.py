@@ -6,25 +6,23 @@ from math import log10
 from .utils import _zero_significance_filler
 from ..utils import run
 from ..samtools import merge
+from ..piping import pipe
 
 logger = logging.getLogger(__name__)
 
 
-async def ranger(treatment: [str], control: [str], saveto: str = None, threads: int = 1, pcutoff: float = None,
+async def ranger(treatment: [str], control: [str], saveto: str = None, maxthreads: int = 1, pcutoff: float = None,
                  fdrcutoff: float = 0.05, format: str = "bam"):
-    assert all(os.path.isfile(f) for f in treatment + control)
-    assert threads > 0
+    assert all(os.path.exists(f) for f in treatment + control)
+    assert maxthreads > 0
 
     # merge treatment and control as a single file - peakranger requirement
-    mtreatment, mcontrol = await asyncio.gather(merge(treatment, threads), merge(control, threads))
+    threads = max(1, int(round(maxthreads / 2)))
+    mtreatment, mcontrol = merge(treatment, threads) if len(treatment) >= 2 else treatment[0], \
+                           merge(control, threads) if len(control) >= 2 else control[0]
     tmpfile = os.path.join(tempfile.mkdtemp(), "ranger.bed")
 
     await _ranger(mtreatment, mcontrol, tmpfile, threads=threads, pcutoff=pcutoff, fdrcutoff=fdrcutoff, format=format)
-
-    # free intermediates
-    for f in [mtreatment, mcontrol]:
-        if f not in treatment and f not in control:
-            os.remove(f)
 
     logger.debug("Building narrow bed report file...")
 
@@ -57,23 +55,20 @@ async def ranger(treatment: [str], control: [str], saveto: str = None, threads: 
     return saveto
 
 
-async def bcp(treatment: [str], control: [str], saveto: str = None, threads: int = 1, pcutoff: float = None,
+async def bcp(treatment: [str], control: [str], saveto: str = None, maxthreads: int = 1, pcutoff: float = None,
               fdrcutoff: float = 0.05, format: str = "bam"):
-    assert all(os.path.isfile(f) for f in treatment + control)
-    assert threads > 0
+    assert all(os.path.exists(f) for f in treatment + control)
+    assert maxthreads > 0
 
     # merge treatment and control as a single file - peakranger requirement
-    mtreatment, mcontrol = await asyncio.gather(merge(treatment, threads), merge(control, threads))
+    threads = max(1, int(round(maxthreads / 2)))
+    mtreatment, mcontrol = merge(treatment, threads) if len(treatment) >= 2 else treatment[0], \
+                           merge(control, threads) if len(control) >= 2 else control[0]
     tmpfile = os.path.join(tempfile.mkdtemp(), "bcp.bed")
 
     await _bcp(mtreatment, mcontrol, saveto=tmpfile, pcutoff=pcutoff, format=format)
 
-    # free intermediates
-    for f in [mtreatment, mcontrol]:
-        if f not in treatment and f not in control:
-            os.remove(f)
-
-    logger.debug("Building narrow bed report file...")
+    logger.debug("Building broad bed report file...")
 
     saveto = saveto if saveto is not None else tempfile.mkstemp()[1]
 
@@ -84,13 +79,13 @@ async def bcp(treatment: [str], control: [str], saveto: str = None, threads: int
     # chrom chromStart chromEnd name score strand signalValue pValue qValue
     def converter(data):
         qvalue_filler = str(_zero_significance_filler(data, 6))
-        data = []
+        result = []
         for line in data:
             qvalue = float(line[6])
             # fdr control is not implemented in the bcp, do it here
             if qvalue >= fdrcutoff:
                 continue
-            data.append([
+            result.append([
                 line[0],  # chrom
                 line[1],  # chromStart
                 line[2],  # chromEnd
@@ -101,10 +96,10 @@ async def bcp(treatment: [str], control: [str], saveto: str = None, threads: int
                 "-1",     # pValue
                 str(-log10(qvalue)) if qvalue != 0 else qvalue_filler,  # qValue
             ])
-        return data
+        return result
     _parse_ranger(converter, tmpfile, saveto, cleanup=True)
 
-    logger.debug("Finished narrow bed report file...")
+    logger.debug("Finished broad bed report file...")
     return saveto
 
 
@@ -135,8 +130,9 @@ def _parse_ranger(converter, path: str, saveto: str, cleanup: bool = True):
 
 # duplicates are filtered by default
 # paired end reads are automatically detected(not sure)
+@pipe(writearg=("saveto", "f"), treatment="f", control="f")
 async def _ranger(treatment: str, control: str, saveto: str, threads: int,
-                  pcutoff: float, fdrcutoff: float, format: str):
+                  pcutoff: float, fdrcutoff: float, format: str) -> str:
     cmd = [
         "peakranger", "ranger", f"--data={treatment}", f"--control={control}", f"--output={saveto}",
         f"--format={format}", f"--FDR={fdrcutoff}", "--verbose", f"--thread={threads}"
@@ -150,7 +146,8 @@ async def _ranger(treatment: str, control: str, saveto: str, threads: int,
 
 # duplicates are filtered by default
 # paired end reads are automatically detected(not sure)
-async def _bcp(treatment: str, control: str, saveto: str, pcutoff: float, format: str = "bam"):
+@pipe(writearg=("saveto", "f"), treatment="f", control="f")
+async def _bcp(treatment: str, control: str, saveto: str, pcutoff: float, format: str = "bam") -> str:
     cmd = [
         "peakranger", "bcp", f"--data={treatment}", f"--control={control}", f"--output={saveto}",
         f"--format={format}", "--verbose"

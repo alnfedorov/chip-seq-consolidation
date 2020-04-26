@@ -1,7 +1,20 @@
 import os
 import shutil
 from .config import ORIGINAL_DIR, UNFILTERED_READS_DIR, DUPLICATED_READS_DIR, UNIQUE_READS_DIR, PEAK_CALLING_DIR, \
-    LOGS_DIR, CHIPS_DIR, CHIPS_MODELS_DIR, SIMULATED_DIR, SIMULATED_READS_DIRS, BAM_QC_DIR, SUBSAMPLE_DIR, BIGWIG_DIR
+    LOGS_DIR, SIMULATED_DIR, SIMULATED_READS_DIRS, BAM_QC_DIR, SUBSAMPLE_DIR, BIGWIG_DIR, \
+    UNIQUE_READS_PREFIX, DUPLICATED_READS_PREFIX, UNFILTERED_READS_PREFIX
+
+
+def make_filename(*path: [str], mode: str, name: str, accession: str, format: str = "bam", reads: int = None):
+    prefix = {"unique": UNIQUE_READS_PREFIX,
+              "duplicated": DUPLICATED_READS_PREFIX,
+              "unfiltered": UNFILTERED_READS_PREFIX}[mode]
+    filename = [prefix]
+    if reads is not None:
+        filename.append(f"{reads // 10**6}mln")
+    filename += [name, accession]
+    filename = "-".join(filename) + f".{format}"
+    return os.path.join(*path, filename)
 
 
 def mktree(root: str):
@@ -34,7 +47,7 @@ def mktree(root: str):
                 .......
     :param root: path to the experiment root
     """
-    assert os.path.isdir(root)
+    os.makedirs(root, exist_ok=True)
 
     def basic_tree(folder: str):
         for d in (LOGS_DIR, PEAK_CALLING_DIR, BAM_QC_DIR):
@@ -47,16 +60,17 @@ def mktree(root: str):
     original = os.path.join(root, ORIGINAL_DIR)
     basic_tree(original)
 
-    for sim in (CHIPS_DIR, SUBSAMPLE_DIR):
+    for sim in (SUBSAMPLE_DIR, ):
         sim = os.path.join(root, SIMULATED_DIR, sim)
         for d in SIMULATED_READS_DIRS:
             d = os.path.join(sim, d)
             basic_tree(d)
-    chips_params = os.path.join(root, SIMULATED_DIR, CHIPS_DIR, CHIPS_MODELS_DIR)
-    os.makedirs(chips_params, exist_ok=True)
 
 
 def cleanup(root: str):
     """Removes all bam data and keeps only logs, big-wig, and peak-calling results"""
     for dir in (UNFILTERED_READS_DIR, DUPLICATED_READS_DIR, UNIQUE_READS_DIR):
         shutil.rmtree(os.path.join(root, dir))
+
+
+__all__ = [cleanup, make_filename, mktree]

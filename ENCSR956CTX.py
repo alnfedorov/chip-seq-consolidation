@@ -1,6 +1,6 @@
 import asyncio
 from pipeline import endtoend
-from pipeline.utils import BamMeta, ExperimentMeta
+from pipeline.meta import BamMeta, ExperimentMeta
 
 ROOT = '/data/encode/H3K4me3/ENCSR956CTX'
 TARGERT = "H3K4me3"

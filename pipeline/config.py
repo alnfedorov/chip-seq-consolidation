@@ -24,7 +24,7 @@ BROAD_HISTONE_MARKS = [
 
 ORIGINAL_DIR = "original"
 
-SOFT_FDR_CUTOFF = 0.1
+SOFT_FDR_CUTOFF = 0.5
 IDR_CUTOFF = 0.05
 CONSENSUS_FILENAME = "consensus.bed"
 
@@ -51,9 +51,7 @@ UNIQUE_READS_DIR = f'{UNIQUE_READS_PREFIX}-bam'
 BIGWIG_DIR = "big-wig"
 
 SIMULATED_DIR = "simulated"
-CHIPS_DIR = "chips"
 SUBSAMPLE_DIR = "subsample"
-CHIPS_MODELS_DIR = "models"
 
 SIMULATED_READS_DIRS = ["q0.25", "q0.5", "q0.75"]
 READS_TO_SIMULATE = {

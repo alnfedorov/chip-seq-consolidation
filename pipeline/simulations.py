@@ -1,13 +1,15 @@
 import os
 from wrappers import sambamba
 from copy import deepcopy
-from .utils import ExperimentMeta, make_filename
-from .config import READS_TO_SIMULATE, DUPLICATED_READS_DIR
+from .meta import ExperimentMeta
+from .path import make_filename
+from .config import READS_TO_SIMULATE, UNIQUE_READS_DIR
 
 
-# Question, should I use unique reads or something else?
-# There is no reason to use unfiltered,
-# because I would end up with the same reads after processing but with less number of them
+# There is no reason to use unfiltered reads during subsampling.
+# However, sampling must be done based on the file with duplicates because it improves the possibility to include
+# duplicated reads into the resulted file. How to determine the exact number of reads after that? Great question. I don't know.
+# Good point, however, we never can be sure is it a PCR duplicate or library problem. Hence, for the lack of the simplicity we shall use unique reads.
 async def subsample_simulations(subsfolder: str, experiments: [ExperimentMeta],
                                 maxthreads: int = 1, force: bool = False) -> [ExperimentMeta]:
     """
@@ -21,15 +23,15 @@ async def subsample_simulations(subsfolder: str, experiments: [ExperimentMeta],
         allbam = set(sum([exp.treatment + exp.control for exp in subsampled], []))
         for meta in allbam:
             meta.reads = reads
-            meta.unfiltered = None    # keep dummy pointer to avoid reprocessing
-            # meta.unique = None
             meta.simulated = True
-            duplicated = make_filename(folder, DUPLICATED_READS_DIR, mode="duplicated",
-                                       name=meta.name, accession=meta.accession, reads=meta.reads)
-            if not os.path.isfile(duplicated) or force:
-                await sambamba.subsample(
-                    meta.duplicated, reads=reads, saveto=duplicated, threads=maxthreads
+            unique = make_filename(folder, UNIQUE_READS_DIR, mode="unique",
+                                   name=meta.name, accession=meta.accession, reads=meta.reads)
+            if not os.path.isfile(unique) or force:
+                file = sambamba.subsample(
+                    meta.unique, reads=reads, threads=maxthreads
                 )
-                await sambamba.sort(duplicated, inplace=True, threads=maxthreads)
-            meta.duplicated = duplicated
+                await sambamba.sort(file, saveto=unique, threads=maxthreads)
+            meta.unfiltered = unique    # keep dummy pointer to avoid reprocessing
+            meta.unique = unique
+            meta.duplicated = unique
         yield folder, subsampled

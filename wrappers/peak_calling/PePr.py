@@ -6,7 +6,8 @@ from wrappers.utils import run
 from wrappers import sambamba
 from wrappers.peak_calling.utils import _zero_significance_filler
 from math import log10
-
+from wrappers.piping import pipe
+import PePr
 logger = logging.getLogger(__name__)
 
 
@@ -41,27 +42,24 @@ def _pepr_to_broad_bed(folder: str, saveto: str, name="NA", fdrcutoff: float = 0
 
 
 async def PePr(treatment: [str], control: [str], peaktype: str, saveto: str = None, pcutoff: float = None,
-               fdrcutoff: float = 0.05, threads: int = 1, format: str = 'bam'):
-    assert len(treatment) >= 2 and (len(treatment) == len(control) or len(control) == 1), \
-        "All experiments MUST be matched."
+               fdrcutoff: float = 0.05, maxthreads: int = 1, format: str = 'bam'):
+    assert len(set(treatment)) == len(treatment) and len(set(control)) == len(control) and \
+           len(treatment) >= 2 and (len(treatment) == len(control) or len(control) == 1), \
+            "All experiments MUST be matched."
     assert peaktype in ("broad", "sharp")
-    assert threads > 0
+    assert maxthreads > 0
     outdir = tempfile.mkdtemp()
 
     if format.lower() == "bampe":
+        threads = max(1, int(round(maxthreads / (len(treatment) + len(control)))))
         # PePr makes some assumptions about reads order for paired-end reads - sorting by name is required.
-        treatment = await asyncio.gather(*[sambamba.sort(t, threads=threads, byname=True) for t in treatment])
-        control = await asyncio.gather(*[sambamba.sort(c, threads=threads, byname=True) for c in control])
+        treatment = [sambamba.sort(t, threads=threads, byname=True) for t in treatment]
+        control = [sambamba.sort(c, threads=threads, byname=True) for c in control]
 
-    await PePr_(treatment, control, peaktype, outdir, pcutoff, threads, format)
+    await PePr_(treatment, control, peaktype, outdir, pcutoff, maxthreads, format)
 
     # PePr postprocessing - skip for now
     _pepr_to_broad_bed(outdir, saveto, cleanup=True, fdrcutoff=fdrcutoff)
-
-    # cleanup if needed
-    if format.lower() == 'bampe':
-        for f in treatment + control:
-            os.remove(f)
 
     assert not os.path.exists(outdir) and os.path.exists(saveto)
     return saveto
@@ -69,8 +67,9 @@ async def PePr(treatment: [str], control: [str], peaktype: str, saveto: str = No
 
 # duplicates: ok, keep everything by default
 # paired-end: bampe AND MUST BE SORTED BY NAME
+@pipe(writearg=("saveto", "f"), treatment="f", control="f")
 async def PePr_(treatment: [str], control: [str], peaktype: str, saveto: str, pcutoff: float,
-                threads: int, format: str):
+                threads: int, format: str) -> str:
     saveto = saveto if saveto is not None else tempfile.mkstemp()[1]
     cmd = [
         "PePr", "-c", ",".join(treatment), "-i", ",".join(control), "-f", format,

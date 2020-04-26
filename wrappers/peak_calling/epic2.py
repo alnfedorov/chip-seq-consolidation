@@ -5,24 +5,33 @@ import asyncio
 from math import log10
 from wrappers.peak_calling.macs2 import predictd
 from wrappers.utils import run
+from wrappers.cookbook import bam_to_bedpe
 from wrappers.peak_calling.utils import _zero_significance_filler
+from wrappers.piping import pipe
 
 logger = logging.getLogger(__name__)
 
 
-async def epic2(treatment: [str], control: [str], ispaired: bool, binsize: int = 200, gapsallowed: int = 3,
+async def epic2(treatment: [str], control: [str], ispaired: bool, maxthreads: int = 1, binsize: int = 200,
+                gapsallowed: int = 3,
                 fragment_size: int = None, saveto: str = None, fdrcutoff: float = 0.05, genome: str = 'hg19'):
-    if ispaired:
-        assert fragment_size is None
-    elif fragment_size is None:
-        # estimate as mean fragment size across libraries
-        size = [predictd(file) for file in treatment]
-        size = await asyncio.gather(*size)
-        logger.debug(f"SICER(epic2) estimated fragment sizes for chip-seq files {size}")
-        fragment_size = int(round(sum(size) / len(size)))
-        assert fragment_size > 20
-
     output = tempfile.mkstemp()[1]
+    treatment, control = list(set(treatment)), list(set(control))
+
+    if ispaired:
+        # Paired data must be passed as a bedpe files
+        assert fragment_size is None
+        threads = max(1,  int(maxthreads / round((len(treatment) + len(control)))))
+        treatment, control = [bam_to_bedpe(bam, maxthreads=threads) for bam in treatment], \
+                             [bam_to_bedpe(bam, maxthreads=threads) for bam in control]
+    else:
+        if fragment_size is None:
+            # estimate as mean fragment size across libraries
+            size = [predictd(file) for file in treatment]
+            size = await asyncio.gather(*size)
+            logger.debug(f"SICER(epic2) estimated fragment sizes for chip-seq files {size}")
+            fragment_size = int(round(sum(size) / len(size)))
+            assert fragment_size > 20
     await epic2_(treatment, control, binsize, gapsallowed, fragment_size, output, fdrcutoff, genome)
 
     # Convert to the broad bed format
@@ -61,8 +70,9 @@ async def epic2(treatment: [str], control: [str], ispaired: bool, binsize: int =
 
 # duplicates -> auto filter to 1
 # paired-end -> pass bedpe, no other way.
+@pipe(writearg=("saveto", "f"), treatment="p", control="p")
 async def epic2_(treatment: [str], control: [str], binsize: int, gapsallowed: int, fragment_size: int, saveto: str,
-                 fdrcutoff: float, genome: str):
+                 fdrcutoff: float, genome: str) -> str:
     cmd = [
         "epic2", "-t", *treatment, "-c", *control, f"--genome={genome}", f"--false-discovery-rate-cutoff={fdrcutoff}",
         f"--output={saveto}",

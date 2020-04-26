@@ -5,15 +5,18 @@ from multiprocessing import cpu_count
 from wrappers.peak_calling import macs2, epic2, PePr, PeakRanger, idr
 from pybedtools import BedTool, Interval
 from utils.bed import compute_conservative_regions
-from .utils import ExperimentMeta, is_broad
-from wrappers.cookbook import bam_to_bedpe
-from .config import SOFT_FDR_CUTOFF, IDR_CUTOFF, CONSENSUS_FILENAME, BLACKLISTED_REGIONS
+from .meta import ExperimentMeta
+from .config import SOFT_FDR_CUTOFF, IDR_CUTOFF, CONSENSUS_FILENAME, BLACKLISTED_REGIONS, BROAD_HISTONE_MARKS
+
+
+def is_broad(hm: str):
+    return hm in BROAD_HISTONE_MARKS
 
 
 async def call_peaks(pcalling: str, experiments: [ExperimentMeta], maxthreads: int, force: bool):
-    assert len(experiments) == 2
+    assert len(experiments) == 2 and experiments[0].target == experiments[1].target
     consensus = os.path.join(pcalling, CONSENSUS_FILENAME)
-
+    maxthreads = max(1, maxthreads // 3)
     coro = [asyncio.create_task(_run_pepr(experiments, pcalling, IDR_CUTOFF, maxthreads, force))]
 
     # macs2
@@ -27,25 +30,32 @@ async def call_peaks(pcalling: str, experiments: [ExperimentMeta], maxthreads: i
     # epic2
     coro.append(
         _run_idr([
-            _run_epic2(experiments[0], pcalling, SOFT_FDR_CUTOFF, force),
-            _run_epic2(experiments[1], pcalling, SOFT_FDR_CUTOFF, force)
+            _run_epic2(experiments[0], pcalling, SOFT_FDR_CUTOFF, maxthreads, force),
+            _run_epic2(experiments[1], pcalling, SOFT_FDR_CUTOFF, maxthreads, force)
         ], pcalling, rankby="p.value", idrcutoff=IDR_CUTOFF, force=force)
     )
 
     # peakranger
+    # There is no p.value in the bcp algorithm, q.value only
     coro.append(
         _run_idr([
             _run_peakranger(experiments[0], pcalling, SOFT_FDR_CUTOFF, maxthreads, force),
             _run_peakranger(experiments[1], pcalling, SOFT_FDR_CUTOFF, maxthreads, force)
-        ], pcalling, rankby="p.value", idrcutoff=IDR_CUTOFF, force=force)
+        ], pcalling, rankby="q.value" if is_broad(experiments[0].target) else "p.value",
+            idrcutoff=IDR_CUTOFF, force=force)
     )
 
-    await asyncio.gather(*coro)
-    results = [BedTool(os.path.join(pcalling, file)) for file in os.listdir(pcalling) if file.endswith("Peak")]
-
-    # subtract blacklisted regions and presort
+    results = await asyncio.gather(*coro)
+    # also subtract blacklisted regions and presort
     blacklisted = BedTool(BLACKLISTED_REGIONS).sort()
-    results = [bed.sort().subtract(blacklisted).sort() for bed in results]
+    bed = []
+    for r in results:
+        b = BedTool(r).sort().subtract(blacklisted).sort()
+        if len(b) == 0:
+            import warnings
+            warnings.warn(f"ERROR: {r} has no regions after idr")
+            continue
+        bed.append(b)
 
     if not os.path.exists(consensus) or force:
         # create consensus peak set
@@ -55,7 +65,7 @@ async def call_peaks(pcalling: str, experiments: [ExperimentMeta], maxthreads: i
             score = f"{sum(float(i.fields[4]) for i in parents) / len(parents):.2f}"
             return Interval(consensus.chrom, consensus.start, consensus.end, score=score)
 
-        bed = compute_conservative_regions(results, threshold, merge)
+        bed = compute_conservative_regions(bed, threshold, merge)
         bed.sort().saveas(consensus)
     return consensus
 
@@ -72,7 +82,8 @@ async def _run_idr(files: [Awaitable[str]], saveto: str, rankby: str, idrcutoff:
 
 
 async def _run_macs2(experiment: ExperimentMeta, saveto: str, fdrcutoff: float, force: bool):
-    mode = 'duplicated'     # macs2 automatically handles duplicates in a smart way
+    # mode = 'duplicated'     # macs2 automatically handles duplicates in a smart way
+    mode = 'unique'
     isbroad = is_broad(experiment.target)
     postfix = "broadPeak" if isbroad else "narrowPeak"
     file = os.path.join(saveto, f"macs2-{experiment.name}.{postfix}")
@@ -90,12 +101,7 @@ async def _run_epic2(experiment: ExperimentMeta, saveto: str, fdrcutoff: float, 
     file = os.path.join(saveto, f"epic2-{experiment.name}.broadPeak")
     if not os.path.isfile(file) or force:
         treatment, control = experiment.alltreatment(mode), experiment.allcontrol(mode)
-        if experiment.paired_data:
-            pthreads = max(1, threads // (len(treatment) + len(control)))
-            coro = [bam_to_bedpe(bam, maxthreads=pthreads) for bam in treatment + control]
-            files = asyncio.gather(*coro)
-            treatment, control = files[:len(treatment)], files[len(treatment):]
-        await epic2.epic2(treatment, control, experiment.paired_data, saveto=file, fdrcutoff=fdrcutoff)
+        await epic2.epic2(treatment, control, experiment.paired_data, threads, saveto=file, fdrcutoff=fdrcutoff)
     assert os.path.isfile(file)
     return file
 
@@ -107,12 +113,11 @@ async def _run_peakranger(experiment: ExperimentMeta, saveto: str, fdrcutoff: fl
     if is_broad(experiment.target):
         file = os.path.join(saveto, f"bcp-{experiment.name}.broadPeak")
         if not os.path.exists(file) or force:
-            await PeakRanger.bcp(treatment, control, saveto=saveto, fdrcutoff=fdrcutoff)
+            await PeakRanger.bcp(treatment, control, saveto=file, maxthreads=threads, fdrcutoff=fdrcutoff)
     else:
         file = os.path.join(saveto, f"ranger-{experiment.name}.narrowPeak")
-        threads = cpu_count() if threads < 0 else max(1, threads)
         if not os.path.exists(file) or force:
-            await PeakRanger.ranger(treatment, control, saveto=file, threads=threads, fdrcutoff=fdrcutoff)
+            await PeakRanger.ranger(treatment, control, saveto=file, maxthreads=threads, fdrcutoff=fdrcutoff)
     assert os.path.isfile(file)
     return file
 
@@ -131,7 +136,7 @@ async def _run_pepr(experiments: [ExperimentMeta], saveto: str, fdrcutoff: float
         treatment, control = list(set(treatment)), list(set(control))
 
         format = "bam" if not is_paired else "bampe"
-        await PePr.PePr(treatment, control, peaktype, saveto=file, threads=threads, format=format, fdrcutoff=fdrcutoff)
+        await PePr.PePr(treatment, control, peaktype, saveto=file, maxthreads=threads, format=format, fdrcutoff=fdrcutoff)
     assert os.path.exists(file)
     return file
 

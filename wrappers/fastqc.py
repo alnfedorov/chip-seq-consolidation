@@ -2,6 +2,7 @@ import os
 import tempfile
 import logging
 from .utils import run
+from .piping import pipe
 
 logger = logging.getLogger(__name__)
 

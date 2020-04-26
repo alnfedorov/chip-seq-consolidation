@@ -25,10 +25,6 @@ async def run(cmd: [str], logger: logging.Logger = None, logbefore: str = None, 
         if e.stderr is not None:
             logger.error(e.stderr.decode())
         raise e
-    except Exception as e:
-        print("ASDADADADADS ", e)
-        raise e
-
     if logstdout and result.stdout is not None:
         logger.debug(result.stdout.decode())
 

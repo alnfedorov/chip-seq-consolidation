@@ -3,7 +3,7 @@ import logging
 from logging import Handler, LogRecord, Formatter
 
 
-def config_logging(logfolder: str, level: str = "NOTSET"):
+def config(logfolder: str, level: str = "NOTSET"):
     assert os.path.isdir(logfolder)
     logging.basicConfig(level=level, format="%(levelname)s: %(name)s: %(message)s")
     logger = logging.getLogger()

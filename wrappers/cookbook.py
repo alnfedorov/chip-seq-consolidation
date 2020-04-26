@@ -2,10 +2,13 @@ import os
 import sys
 import asyncio
 import tempfile
+from .piping import pipe
 from asyncio.subprocess import create_subprocess_shell
 
 
-async def bam_to_bedpe(bam: str, saveto: str = None, maxthreads: int = 1):
+# It should be piped really but doesn't work for some reason...
+@pipe(writearg=("saveto", "f"), bam="p")
+async def bam_to_bedpe(bam: str, saveto: str = None, maxthreads: int = 1) -> str:
     assert maxthreads >= 1
     saveto = saveto if saveto else tempfile.mkstemp()[1]
     cmd = f"sambamba sort -t {maxthreads} -p -n -M {bam} -o /dev/stdout | " \
@@ -17,18 +20,8 @@ async def bam_to_bedpe(bam: str, saveto: str = None, maxthreads: int = 1):
     return saveto
 
 
-# LC_COLLATE=C bedtools genomecov -bga -ibam tmps.sorted.bam | \
-# bedtools slop -i /dev/stdin -g /data/hg19/chromInfo.txt -b 0 | \
-# bedClip /dev/stdin /data/hg19/chromInfo.txt /dev/stdout | \
-# sort -k1,1 -k2,2n /dev/stdin > tmp.txt && \
-# bedGraphToBigWig tmp.txt /data/hg19/chromInfo.txt tmps.bw
-
-# bedtools genomecov -bga -ibam tmps.sorted.bam > tmp1.bdg && \
-# bedtools slop -i tmp1.bdg -g /data/hg19/chromInfo.txt -b 0 > tmp2.bdg && \
-# bedClip tmp2.bdg /data/hg19/chromInfo.txt tmp3.bdg && \
-# LC_COLLATE=C sort -k1,1 -k2,2n tmp3.bdg > tmp4.bdg && \
-# bedGraphToBigWig tmp4.bdg /data/hg19/chromInfo.txt tmps2.bw
-def bam_to_bigwig(bam: str, chrominfo: str, saveto: str):
+@pipe(writearg=("saveto", "p"), bam="p")
+async def bam_to_bigwig(bam: str, chrominfo: str, saveto: str) -> str:
     tmp = tempfile.mkstemp()[1]
     cmd = f'LC_COLLATE=C bedtools genomecov -bga -ibam "{bam}" | ' \
           f'bedtools slop -i /dev/stdin -g "{chrominfo}" -b 0 | ' \
