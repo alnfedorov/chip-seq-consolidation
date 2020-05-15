@@ -49,9 +49,6 @@ class EpochMetricsContainer:
         if y_true.ndimension() == 2 and y_true.shape[1] == 1:
             y_true = y_true.squeeze(dim=-1)
 
-        y_pred = y_pred.to(torch.float32)
-        y_true = y_true.to(torch.long)
-
         self._targets.append(y_true.cpu())
         self._predictions.append(y_pred.cpu())
 
@@ -71,7 +68,7 @@ class EpochMetricsContainer:
 
     def completed(self, engine):
         metrics = self.compute()
-        for k, v in metrics:
+        for k, v in metrics.items():
             if torch.is_tensor(v) and len(v.shape) == 0:
                 v = v.item()
             if k in engine.state.metrics:
