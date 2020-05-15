@@ -7,7 +7,7 @@ from pathlib import Path
 from collections import defaultdict
 
 __all__ = [
-    "CHROMOSOME_SIZE", "3UTR", "5UTR", "AMBIGUOUS",
+    "CHROMOSOME_SIZE", "UTR3", "UTR5", "AMBIGUOUS",
     "EXONS", "DOWNSTREAM_1K", "INTRONS", "UPSTREAM_1K"
 ]
 

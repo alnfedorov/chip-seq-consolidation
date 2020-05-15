@@ -1,2 +1,2 @@
-from .dataset import ChIPseq
+from .datasets import ConcatChIPseqDataset, ChIPseqReplicaTrainDataset
 from . import filter

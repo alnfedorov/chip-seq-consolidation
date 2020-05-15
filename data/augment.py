@@ -30,3 +30,5 @@ def randreads(treatment: Tuple[BigWigMeta, ...], control: Tuple[BigWigMeta, ...]
         for strt in np.random.randint(0, len(oreads), size=togenerate):
             oreads[strt: strt + meta.readlen] += 1
     return reads
+
+# TODO: horizontal flipping

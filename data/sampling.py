@@ -52,7 +52,7 @@ class BalancedBatchSampler(BatchSampler):
         annkeys = list(meta[0].annotation.keys())
         annotation = {k: np.asarray([x.annotation[k] for x in meta]) for k in annkeys}
         annotation = {k: toquantiles(v) for k, v in annotation.items()}
-        assert peaksq.size == readsq.size and all(annotation[k].size == peaksq.size for k in annkeys)
+        assert peaksq.size == readsq.size and all(annotation[k].chromlen == peaksq.size for k in annkeys)
 
         index = defaultdict(list)
         for ind, m in enumerate(meta):

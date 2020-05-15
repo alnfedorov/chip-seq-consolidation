@@ -6,8 +6,6 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class BigWigMeta:
     path: str
-    readlen: int
-    numreads: int
 
     def __post_init__(self):
         assert os.path.isfile(self.path)
@@ -24,11 +22,13 @@ SimulatedBigWig = TypedDict(
 
 
 @dataclass(frozen=True)
-class ReplicaMeta:
+class ChIPseqReplicaMeta:
+    experiment_accession: str
     target: str
-    treatment: Tuple[SimulatedBigWig, ...]
-    control: Tuple[SimulatedBigWig, ...]
+    enrichment: SimulatedBigWig
     peaks: str
+    treatment: Tuple[str, ...]
+    control: Tuple[str, ...]
 
     def __post_init__(self):
         assert os.path.exists(self.peaks)
