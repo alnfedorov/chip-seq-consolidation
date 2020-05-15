@@ -47,3 +47,5 @@ RUN apt-get update && apt-get install -y openssh-server \
     && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config \
     && echo ${public_key} >> ~/.ssh/authorized_keys \
     && echo "service ssh restart" >> ~/.bashrc  # hard-fix
+
+RUN ${PYTHON} -m pip install macs2
