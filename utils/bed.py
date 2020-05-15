@@ -1,5 +1,6 @@
 from pybedtools import BedTool, Interval
 from typing import Iterable, Callable
+from math import log10
 
 
 def _default_merge(intervals: Iterable[Interval], new_interval: Interval) -> Interval:
@@ -35,8 +36,8 @@ def coverage(source: BedTool, to_intersect: BedTool, presorted: bool = True) -> 
     return coverage
 
 
-def compute_conservative_regions(bed: Iterable[BedTool], weights: [int], threshold: float,
-                                 merge: Callable[[Iterable[Interval], Interval], Interval] = _default_merge) -> BedTool:
+def consensus(bed: Iterable[BedTool], weights: [int], threshold: float,
+              merge: Callable[[Iterable[Interval], Interval], Interval] = _default_merge) -> BedTool:
     """
     :param bed: Original bed files
     :param weights: vote's weights, pass ones if you are not sure
@@ -103,3 +104,25 @@ def compute_conservative_regions(bed: Iterable[BedTool], weights: [int], thresho
                 new_intervals.append((ind, inter))
         intervals = new_intervals
     return BedTool(result).sort().merge()
+
+
+def threshold_qvalue(bed: BedTool, qvalue: float = 0.05, column=8, verbose: bool = True):
+    """
+    Threshold bed file entries by qvalue.
+    NOTE: bed files must be in the standard narrow or broad peak format and include -log10(qvalue) column
+    """
+    nlog10_qvalue = -log10(qvalue)
+
+    lenbefore = len(bed)
+    filtered = []
+    for interval in bed:
+        # assert len(interval.fields) in (20, 18, 10, 9), f"{bed.fn}-{len(interval.fields)}"
+        value = float(interval.fields[column])
+        assert value >= 0
+        if value >= nlog10_qvalue:
+            filtered.append(interval)
+    filtered = BedTool(filtered).sort()
+    lenafter = len(filtered)
+    if verbose:
+        print(f"Filtered {lenbefore - lenafter} intervals")
+    return filtered
