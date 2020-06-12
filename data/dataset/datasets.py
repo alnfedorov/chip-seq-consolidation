@@ -2,33 +2,26 @@ import numpy as np
 import pyBigWig
 import utils
 from torch.utils.data import Dataset, ConcatDataset
-from data.pod import IntervalMeta, ChIPseqReplicaMeta, BigWigMeta
-from .misc import ChIPseqReplica
+from data.pod import IntervalMeta, ChIPseqReplicaMeta, SeparatedReadsMeta
+from .misc import ChIPseqReplica, IntervalReads
 from tqdm import tqdm
 from typing import Callable, Generator, Tuple, Optional
 from pybedtools import BedTool, Interval
 from itertools import groupby, chain
 from typing import Dict, List
+from utils import augreads
 
 
 class ChIPseqReplicaTrainDataset(Dataset):
-    def __init__(self, intervals: BedTool, meta: ChIPseqReplicaMeta, binsize: int, sampling: str):
-        assert binsize >= 1
-        self.intervals: [Interval] = list(intervals.sort())
+    def __init__(self, target: str, intervals: BedTool, peaks: str, treatment: SeparatedReadsMeta,
+                 control: SeparatedReadsMeta, chromnfo: Dict[str, int], fragment_sizes: Tuple[int, ...],
+                 binsize: int, effective_genome_size: int):
+        assert binsize >= 1 and effective_genome_size > 1
+        self.target = target
+        self.intervals: List[Interval, ...] = list(intervals.sort())
+        self._dataset = ChIPseqReplica(treatment, control, chromnfo, effective_genome_size, peaks)
+        self.fragments_sizes = fragment_sizes
         self.binsize = binsize
-        self.target = meta.target
-        self.experiment_accession = meta.experiment_accession
-        self.sampling = sampling
-        self.subsampled = ChIPseqReplica.frommeta(meta, sampling)
-        self.reference = ChIPseqReplica.frommeta(meta, "original")
-
-    def reread_bigwig_on_query(self):
-        self.subsampled.reread_bigwig_on_query()
-        self.reference.reread_bigwig_on_query()
-
-    # def add_augmentation(self, intervals: Callable, bigwig: Callable):
-    #     self.intaug = intervals
-    #     self.bigwigaug = bigwig
 
     def __len__(self):
         return len(self.intervals)
@@ -43,35 +36,110 @@ class ChIPseqReplicaTrainDataset(Dataset):
         assert 0 <= idx < len(self)
         interval = self.intervals[idx]
 
-        # if self.intaug:
-        #     interval = self.intaug(interval)
+        # 1. Fetch reference reads and enrichment
+        reffragment_size = sum(self.fragments_sizes) / len(self.fragments_sizes)
+        reftreatment_numreads, refcontrol_numreads = self._dataset.treatment.numreads, self._dataset.control.numreads
 
-        # reads = self.subsampled.reads(interval)
-        # refreads = self.reference.reads(interval)
+        treatment, control, refenrichment = self._dataset.enrichment(interval,
+                                                                     reftreatment_numreads, refcontrol_numreads,
+                                                                     reffragment_size)
+        # 2. Randomize fragment size
+        # TODO: Use log-normal distribution
+        # https://en.wikipedia.org/wiki/Log-normal_distribution
+        # https://github.com/fnaumenko/isChIP
+        # https://github.com/fnaumenko/bioStat/blob/master/pict/PEdistribs_medium.png
+        minfs, maxfs = min(self.fragments_sizes), max(self.fragments_sizes)
+        fragment_size = np.random.randint(min(minfs, 100), max(200 + 1, maxfs + 1))
 
-        # if self.bigwigaug:
-        #     assert set(reads.keys()) != set(refreads.keys())
-        #     totalreads = {k}
+        shift_limits = (-75, 75)    # randomly shift by half of the nucleosome size
+        # treatment_numreads = augreads.randreads(maxreads=reftreatment_numreads)
+        # treatment = augreads.subsample(treatment, before=reftreatment_numreads, after=treatment_numreads)
+        noise = np.random.random() * 0.9
+        # mixin treatment and control to have *noise* ratio between treatment and control
+        treatment_numreads, treatment = augreads.lowenrichment(treatment, reftreatment_numreads, control, refcontrol_numreads, noise)
+        treatment = augreads.shift(treatment, shift_limits)
 
-        enrichment = self.subsampled.enrichment(interval)
-        refenrichment = self.reference.enrichment(interval)
+        control_numreads = augreads.randreads(maxreads=refcontrol_numreads)
+        control = augreads.subsample(control, before=refcontrol_numreads, after=control_numreads)
+        control = augreads.shift(control, shift_limits)
+
+        *_, enrichment = self._dataset.enrichment(interval,
+                                                  treatment_numreads, control_numreads,
+                                                  fragment_size, treatment=treatment, control=control)
+
         assert enrichment.shape == refenrichment.shape and refenrichment.ndim == 1
-        nbins = enrichment.size // self.binsize
+        nbins = interval.length // self.binsize
 
         dobinning = lambda x: x.reshape(nbins, -1).mean(axis=-1)
         enrichment, refenrichment = dobinning(enrichment), dobinning(refenrichment)
 
-        peaks = dobinning(self.reference.peaks(interval))
+        peaks = dobinning(self._dataset.peaks(interval))
 
         assert enrichment.shape == refenrichment.shape == peaks.shape and \
                enrichment.dtype == refenrichment.dtype == peaks.dtype == np.float32
 
-        tozero = np.isnan(enrichment) | np.isnan(refenrichment)
-        enrichment[tozero] = 0
-        refenrichment[tozero] = 0
-        peaks[tozero] = 0
+        ohepeaks = np.empty((2, peaks.size), dtype=np.float32)
+        ohepeaks[0, :] = 1 - peaks
+        ohepeaks[1, :] = peaks
+        return {"enrichment": enrichment, "refenrichment": refenrichment, "peaks": ohepeaks}
 
-        ohepeaks = np.empty((2, peaks.chromlen), dtype=np.float32)
+
+class ChIPseqReplicaValDataset(Dataset):
+    def __init__(self, uid: str, experiment_accession: str, target: str, sampling: str, intervals: BedTool, peaks: str,
+                 reftreatment: SeparatedReadsMeta, refcontrol: SeparatedReadsMeta,
+                 reffragment_size: int,
+                 sampledtreatment: SeparatedReadsMeta, sampledcontrol: SeparatedReadsMeta,
+                 sampledfragment_size: int,
+                 chrominfo: Dict[str, int],
+                 binsize: int,
+                 effective_genome_size: int):
+        assert binsize >= 1 and effective_genome_size > 1
+        self.uid = uid
+        self.experiment_accession = experiment_accession
+        self.target = target
+        self.sampling = sampling
+        self.intervals: List[Interval, ...] = list(intervals.sort())
+        self._reference = ChIPseqReplica(reftreatment, refcontrol, chrominfo, effective_genome_size, peaks)
+        self._sampled = ChIPseqReplica(sampledtreatment, sampledcontrol, chrominfo, effective_genome_size)
+        self._reffragment_size = reffragment_size
+        self._sampledfragment_size = sampledfragment_size
+        self.binsize = binsize
+
+    def __len__(self):
+        return len(self.intervals)
+
+    def remove(self, indices):
+        lenbefore = len(self)
+        for ind in sorted(indices, reverse=True):
+            del self.intervals[ind]
+        assert lenbefore - len(self) == len(indices)
+
+    def __getitem__(self, idx):
+        assert 0 <= idx < len(self)
+        interval = self.intervals[idx]
+
+        reftreatment_numreads, refcontrol_numreads = self._reference.treatment.numreads, \
+                                                     self._reference.control.numreads
+        *_, refenrichment = self._reference.enrichment(interval, reftreatment_numreads, refcontrol_numreads,
+                                                       self._reffragment_size)
+
+        treatment_numreads, control_numreads = self._sampled.treatment.numreads, \
+                                               self._sampled.control.numreads
+        *_, enrichment = self._sampled.enrichment(interval, treatment_numreads, control_numreads,
+                                                  self._sampledfragment_size)
+
+        assert enrichment.shape == refenrichment.shape and refenrichment.ndim == 1
+        nbins = interval.length // self.binsize
+
+        dobinning = lambda x: x.reshape(nbins, -1).mean(axis=-1)
+        enrichment, refenrichment = dobinning(enrichment), dobinning(refenrichment)
+
+        peaks = dobinning(self._reference.peaks(interval))
+
+        assert enrichment.shape == refenrichment.shape == peaks.shape and \
+               enrichment.dtype == refenrichment.dtype == peaks.dtype == np.float32
+
+        ohepeaks = np.empty((2, peaks.size), dtype=np.float32)
         ohepeaks[0, :] = 1 - peaks
         ohepeaks[1, :] = peaks
         return {"enrichment": enrichment, "refenrichment": refenrichment, "peaks": ohepeaks}
@@ -125,61 +193,3 @@ class ConcatChIPseqDataset(Dataset):
     def __getitem__(self, idx):
         dataset_idx, sample_idx = self.unroll_idx(idx)
         return self.datasets[dataset_idx][sample_idx]
-
-
-
-# 1. For each experiment, what do we want to do?
-# Список регионов -> (мета региона, метка -> (мета эксперимента, отсортированные регионы))
-# Как мне сохранить такую же укладку данных, но выкинуть какие-либо индексы экспериментов?
-# Пусть тупо массив булов - включен/выключен массив в этом эксперименте
-# Как по нему индексировать? Хороший вопрос. Хочу бинарный поиск, но так просто это не зайдет.
-# 1111100001111111100000111111100011111100111111111 - нужно взять n-yю единицу за минимум времени
-# (0,5,5)(10,17,12) - да, можно переводить из такого представления и в него обратно.
-# Но мы что? А мы ничего. Мы будем тупо брать массив интов и использовать его в качестве отображения(!!!!!)
-# for exp in experiments:
-#   for q in ["q0.25", "q0.5", "q0.75"]:
-#       for
-
-# Alright, there is some bool arrays. How to fast index it then?
-# Find experiment should be easy - just binary search cumsum
-# How to index inside experiment
-
-# """
-# Внешние интервалы передаются в датасет
-# Датасет НЕ делает аугментацию, ее делают ребята в Pipeline. Или все-таки датасет это все вместе?
-#
-# Да плевать на этот факт!
-# Что делаем? Просто датасет. Просто один класс. Который делает следующее:
-# 1. Получает интервалы и BigWig файлы
-# 2. Получает аугментацию отдельным методом
-# 3. Имеет методы для удаления окон по регионам
-#
-# Кто хранит данные?
-# * Датасет
-#
-# Кто фильтрует данные?
-# * Датасет
-#
-# Кто сэмплирует данные?
-# * Сэмплер)
-#
-# Интервалы -> аугментация -> BigWigInjector -> ReadsNoise ->
-#
-# Интервалы можно вообще просто передать в виде BedTool, а окна делать в makewindows каком-нибудь
-# Где происходит аугментация? Хороший вопрос. В самом датасете, вероятно.
-#
-# Ок, тогда исходные окна просто передаются датасету. Или он знает о мете?
-# Она мне нужна только чтобы подсчитать единожды(!) веса для каждого интервала -> мета не должна храниться в датасете.
-#
-# Окна создаются внешней функцией и просто передаются в датасет, у которого есть аугментер
-# Аугментер, следовательно, можно будет выключать в какой-то момент.
-#
-# Датасет в свою очередь НЕ знает ни о какой мете. И просто применяет аугментор и посылает их дальше.
-# НЕ знает он ни о какой мете
-#
-#
-# Как тогда классы устроить?
-# Я хочу простой класс - провайдер интервалов
-# Простой класс с мета информацией
-# Простой класс, который считает
-# """

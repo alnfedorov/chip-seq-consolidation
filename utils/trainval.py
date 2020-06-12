@@ -6,7 +6,7 @@ import torch
 from ignite.engine import Engine, Events
 from torch.utils.data import DataLoader
 
-from data.dataset import ChIPseqReplicaTrainDataset
+from data.dataset import ChIPseqReplicaValDataset
 from . import metrics
 
 
@@ -38,8 +38,8 @@ def doiteration(engine: Engine, batch, *, loss_enrichment, loss_peaks, device, m
 
 
 def attach_validation(engine: Engine, doiter, model: torch.nn.Module, dataloaders: Dict[str, DataLoader]):
-    def doval(engine: Engine, valengines: Dict[ChIPseqReplicaTrainDataset, Engine],
-              valloaders: Dict[ChIPseqReplicaTrainDataset, DataLoader]):
+    def doval(engine: Engine, valengines: Dict[ChIPseqReplicaValDataset, Engine],
+              valloaders: Dict[ChIPseqReplicaValDataset, DataLoader]):
         torch.cuda.empty_cache()
         model.eval()
 
@@ -53,7 +53,7 @@ def attach_validation(engine: Engine, doiter, model: torch.nn.Module, dataloader
             # 2. report per replica metrics with key: val-target-sampling-experiment_accession(treatment accession)
             result = {}
             for dst, dstmetrics in metrics_per_dst.items():
-                base_key = f"val-{dst.target}-{dst.sampling}-{dst.experiment_accession}({dst.subsampled.uid})"
+                base_key = f"val-{dst.target}-{dst.sampling}-{dst.experiment_accession}({dst.uid})"
                 assert all(f"{base_key}-{k}" not in result for k in dstmetrics)
                 result.update({f"{base_key}-{k}": v for k, v in dstmetrics.items()})
 

@@ -39,6 +39,8 @@ CHROMOSOME_SIZE = {
     "chr21": 48129895
 }
 
+EFFECTIVE_GENOME_SIZE = 2.7e9
+
 root = Path("/data/hg19/")
 annotation = root.joinpath("annotation")
 

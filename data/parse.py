@@ -1,22 +1,18 @@
-import os
 import json
+import os
 import tempfile
+from collections import defaultdict
+from typing import Tuple
+
 import numpy as np
-from typing import Callable, Tuple
 from pybedtools import BedTool
-from utils import bed
-from data.pod import SimulatedBigWig, BigWigMeta, ChIPseqReplicaMeta
+
 from data.hg19.annotation import BLACKLISTED
+from data.pod import BamMeta, ChIPseqReplicaMeta, AccessionInfo
+from utils import bed
 
 
-def fromjson(root: str, blacklisted: str = BLACKLISTED.fn,
-             consensusfn=bed.consensus) -> Tuple[ChIPseqReplicaMeta, ...]:
-    file = os.path.join(root, "meta.json")
-    assert os.path.isfile(file) and os.path.isfile(blacklisted), f"Files not found {file}, {blacklisted}"
-    with open(file, 'r') as file:
-        meta = json.load(file)
-    blacklisted = BedTool(blacklisted)
-
+def _consensus(meta: dict, root: str, balcklisted: str, consensusfn, minpeaks: int = 20):
     # 1. make consensus bed files, simple strategy -> weighted majority voting
     sampling = "original"
     weighting = {"pepr": len(meta["replicates"]), "macs2": 1, "epic2": 1, "peakranger": 1}
@@ -25,8 +21,8 @@ def fromjson(root: str, blacklisted: str = BLACKLISTED.fn,
     bedweights = []
 
     pepr = os.path.join(root, meta["replicated-peak-calling"][sampling]["pepr"])
-    pepr = bed.threshold_qvalue(BedTool(pepr)).sort()
-    if len(pepr) < 20:
+    pepr = BedTool(pepr).sort()
+    if len(pepr) < minpeaks:
         print(f"Skipped pepr, not enough peaks")
     else:
         bedfiles.append(pepr)
@@ -35,8 +31,8 @@ def fromjson(root: str, blacklisted: str = BLACKLISTED.fn,
     for r in meta["replicates"]:
         peaks = r["peak-calling"][sampling]
         for k, path in peaks.items():
-            bedfile = bed.threshold_qvalue(BedTool(os.path.join(root, path))).sort()
-            if len(bedfile) < 20:
+            bedfile = BedTool(os.path.join(root, path)).sort()
+            if len(bedfile) < minpeaks:
                 print(f"Skipped bed file {path}, not enough peaks")
                 continue
             bedfiles.append(bedfile)
@@ -47,39 +43,56 @@ def fromjson(root: str, blacklisted: str = BLACKLISTED.fn,
     bedweights = bedweights / np.linalg.norm(bedweights, ord=1)
 
     # compute consensus and save as a file
-    consensus = consensusfn(bedfiles, bedweights, threshold=0.5)
+    consensus = consensusfn(bedfiles, bedweights, threshold=0.75)
     fname = tempfile.mkstemp()[1]
     consensus = consensus.subtract(
-        blacklisted.sort()
+        BedTool(balcklisted).sort()
     ).sort().saveas(fname).fn
+    return consensus
 
-    # 2. parse replicates meta information
+
+def fromjson(root: str, blacklisted: str = BLACKLISTED.fn,
+             consensusfn=bed.consensus) -> Tuple[ChIPseqReplicaMeta, ...]:
+    file = os.path.join(root, "meta.json")
+    assert os.path.isfile(file) and os.path.isfile(blacklisted), f"Files not found {file}, {blacklisted}"
+    with open(file, 'r') as file:
+        meta = json.load(file)
+
+    # 1. make consensus peaks set
+    consensus = _consensus(meta, root, blacklisted, consensusfn)
+
+    # 2. parse bam files information
+    bam = defaultdict(dict)  # sampling -> accession -> bam meta
+    for accession, bammeta in meta["files"].items():
+        readlen = bammeta["readlen"]
+        samplings = [k for k in bammeta.keys() if k != "readlen"]
+        for sampling in samplings:
+            bam[sampling][accession] = BamMeta(
+                path=os.path.join(root, bammeta[sampling]["filtered"]),
+                estimated_fragment_size=bammeta[sampling]["fragment_size"],
+                numreads=bammeta[sampling]["numreads"],
+                readlen=readlen
+            )
+
+    # 3. parse replicas information
     replicas = []
-    for r in meta["replicates"]:
-        # parse big-wig enrichment files
-        enrichment = {k: BigWigMeta(os.path.join(root, r["enrichment"][k]))
-                      for k in ["original", "subsampled-q0.25", "subsampled-q0.5", "subsampled-q0.75"]}
-        enrichment = {k.replace("subsampled-", ""): v for k, v in enrichment.items()}
-        enrichment = SimulatedBigWig(**enrichment)
-        # enrichment = {}
-        # for accession, info in meta['files'].items():
-        #     readlen = info["readlen"]
-        #     files = {
-        #         k: BigWigMeta(os.path.join(root, info[k]["bigwig"]), readlen, info[k]["numreads"], accession)
-        #         for k in ["original", "subsampled-q0.25", "subsampled-q0.5", "subsampled-q0.75"]
-        #     }
-        #     files = {k.replace("subsampled-", ""): v for k, v in files.items()}
-        #     assert all(os.path.isfile(f.path) for f in files.values())
-        #     bigwigs[accession] = SimulatedBigWig(**files)
+    for replica in meta["replicates"]:
+        accessions = AccessionInfo(meta["accession"], replica["treatment"], replica["control"])
+        treatment, control = defaultdict(list), defaultdict(list)
+        for sampling in bam.keys():
+            treatment[sampling] = tuple(bam[sampling][t] for t in accessions.treatment)
+            control[sampling] = tuple(bam[sampling][c] for c in accessions.control)
+        samplemods = tuple(sorted(treatment.keys()))
+        assert samplemods == tuple(sorted(control.keys()))
 
         replicas.append(
             ChIPseqReplicaMeta(
-                experiment_accession=meta["accession"],
-                target=meta["target"].lower(),
-                enrichment=enrichment,
+                accesions=accessions,
+                target=meta["target"],
                 peaks=consensus,
-                treatment=r["treatment"],
-                control=r["control"]
+                treatment=dict(treatment),
+                control=dict(control),
+                samplemods=samplemods
             )
         )
     return tuple(replicas)

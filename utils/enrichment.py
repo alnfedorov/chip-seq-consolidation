@@ -3,7 +3,7 @@ import numpy as np
 from numba.core.types import int32, int64, float32
 
 
-@numba.jit(cache=True, nopython=True)
+@numba.jit(cache=True, nopython=True, nogil=True)
 def _dopileup(start_coords, end_coords, rightmost_coord: int32, scale: float32, baseline: float32):
     # build pileup
     # positions -> start positions of the constant region
@@ -69,7 +69,7 @@ def _dopileup(start_coords, end_coords, rightmost_coord: int32, scale: float32, 
 
 
 def pileup(forward_reads_starts: np.ndarray, reverse_reads_starts: np.ndarray,
-           five_shift: int32, three_shift: int32,
+           five_extension: int32, three_extension: int32,
            leftmost_coord: int32, rightmost_coord: int32, scale: float32, baseline: float32):
     """
     Compute interval-wise pileup values, i.e. for each interval it is a number of DNA fragments covering the interval
@@ -80,8 +80,8 @@ def pileup(forward_reads_starts: np.ndarray, reverse_reads_starts: np.ndarray,
     So, i-th interval has coordinates [positions[i-1], positions[i]) and value values[i]. First interval starts from 0.
     :param forward_reads_starts: start positions of the forward reads
     :param reverse_reads_starts: start positions of the reverse reads
-    :param five_shift: Optional 5' shift for all reads.
-    :param three_shift: Optional 3' shift for all reads. Fragment size / 2, for example.
+    :param five_extension: Optional 5' extension for all reads.
+    :param three_extension: Optional 3' extension for all reads. Fragment size / 2, for example.
     :param leftmost_coord: inclusive, min position value, used to clip reads exceeding chromosome size
     :param rightmost_coord: exclusive, max position value, used to clip reads exceeding chromosome size
     :param scale: all pileup values will be multiplied by this scale
@@ -92,12 +92,12 @@ def pileup(forward_reads_starts: np.ndarray, reverse_reads_starts: np.ndarray,
 
     freads = forward_reads_starts.size
     # handle forward reads
-    start_coords[:freads] = forward_reads_starts - five_shift
-    end_coords[:freads] = forward_reads_starts + three_shift
+    start_coords[:freads] = forward_reads_starts - five_extension
+    end_coords[:freads] = forward_reads_starts + three_extension
 
     # handle reverse reads
-    start_coords[freads:] = reverse_reads_starts - three_shift
-    end_coords[freads:] = reverse_reads_starts + five_shift
+    start_coords[freads:] = reverse_reads_starts - three_extension
+    end_coords[freads:] = reverse_reads_starts + five_extension
 
     # clip coordinates in-place
     start_coords = np.clip(start_coords, leftmost_coord, rightmost_coord - 1, out=start_coords)
@@ -114,7 +114,24 @@ def pileup(forward_reads_starts: np.ndarray, reverse_reads_starts: np.ndarray,
     return ends_of_intervals, values
 
 
-@numba.jit(cache=True, nopython=True)
+@numba.jit("float32[::1](int32[::1], float32[::1], int32, int32)", cache=True, nopython=True, nogil=True)
+def todense(ends_of_intervas, values, dense_start, dense_end):
+    assert ends_of_intervas.size == values.size
+    result = np.empty(dense_end - dense_start, dtype=np.float32)
+    begin = dense_start
+    for end, value in zip(ends_of_intervas, values):
+        if end <= begin:
+            continue
+        s, e = begin - dense_start, end - dense_start
+        result[s: e] = value
+        begin = end
+        if end >= dense_end:
+            break
+    assert end >= dense_end
+    return result
+
+
+@numba.jit(cache=True, nopython=True, nogil=True)
 def per_interval_max(ends_of_intervals, values, scale: float32, baseline: float32):
     for p, v in zip(ends_of_intervals, values):
         assert p.size == v.size
@@ -122,11 +139,11 @@ def per_interval_max(ends_of_intervals, values, scale: float32, baseline: float3
     # 1. Make buffers for current intervals and results
     tracks = len(ends_of_intervals)
     track_nextind = np.zeros(tracks, dtype=np.int32)
-    track_curend = np.empty(tracks, dtype=np.int32)
+    track_curent = np.empty(tracks, dtype=np.int32)
     track_curval = np.empty(tracks, dtype=np.float32)
 
     for track in range(tracks):
-        track_curend[track] = ends_of_intervals[track][0]
+        track_curent[track] = ends_of_intervals[track][0]
         track_curval[track] = values[track][0]
 
     maxlength = int32(0)
@@ -137,7 +154,9 @@ def per_interval_max(ends_of_intervals, values, scale: float32, baseline: float3
     res_values = np.empty(maxlength, dtype=np.float32)
 
     curval = max(baseline, np.max(track_curval))
-    curend = min(track_curend)
+    nextval = curval
+
+    curend = min(track_curent)
     real_length = 0
 
     # ahead declaration of buffer to avoid memory allocation on each iteration
@@ -147,7 +166,7 @@ def per_interval_max(ends_of_intervals, values, scale: float32, baseline: float3
         nextval = max(baseline, np.max(track_curval))
 
         # 2. End of the interval is a min among active intervals ends
-        nextend = min(track_curend)
+        nextend = min(track_curent)
 
         # 3. Save interval if new value is encountered
         if nextval != curval:
@@ -160,21 +179,27 @@ def per_interval_max(ends_of_intervals, values, scale: float32, baseline: float3
         # 4. Push intervals if needed and drop finished intervals
         to_drop_total = 0
         for track in range(tracks):
-            if track_curend[track] == nextend:
+            if track_curent[track] == nextend:
                 nextind = track_nextind[track] + 1
                 # finished interval
                 if nextind == ends_of_intervals[track].size:
                     to_drop[to_drop_total] = track
                     to_drop_total += 1
                     continue
-                track_curend[track] = ends_of_intervals[track][nextind]
+                track_curent[track] = ends_of_intervals[track][nextind]
                 track_curval[track] = values[track][nextind]
                 track_nextind[track] = nextind
+
+                # update max value for the current interval
+                # if values[track][nextind - 1] == nextval:
+                #     nextval = max(baseline, np.max(track_curval))
+                # else:
+                #     nextval = max(nextval, track_curval[track])
 
         if to_drop_total != 0:
             tracks -= to_drop_total
             indices = to_drop[:to_drop_total]
-            track_curend = np.delete(track_curend, indices)
+            track_curent = np.delete(track_curent, indices)
             track_curval = np.delete(track_curval, indices)
             track_nextind = np.delete(track_nextind, indices)
 
@@ -193,7 +218,7 @@ def per_interval_max(ends_of_intervals, values, scale: float32, baseline: float3
     return res_ends[:real_length], res_values[:real_length]
 
 
-@numba.jit(cache=True, nopython=True)
+@numba.jit(cache=True, nopython=True, nogil=True)
 def enrichment(treatment_endcoords, treatment_values, control_endcoords, control_values, pseudocount: float32):
     # assert treatment_endpos.size == treatment_val.size and control_endpos.size == control_val.size
     # assert treatment_endpos.dtype == control_endpos.dtype == np.int32 and \

@@ -118,11 +118,13 @@ def threshold_qvalue(bed: BedTool, qvalue: float = 0.05, column=8, verbose: bool
     for interval in bed:
         # assert len(interval.fields) in (20, 18, 10, 9), f"{bed.fn}-{len(interval.fields)}"
         value = float(interval.fields[column])
-        assert value >= 0
-        if value >= nlog10_qvalue:
+        if value < 0:
+            filtered.append(interval)
+            continue
+        elif value >= nlog10_qvalue:
             filtered.append(interval)
     filtered = BedTool(filtered).sort()
     lenafter = len(filtered)
-    if verbose:
-        print(f"Filtered {lenbefore - lenafter} intervals")
+    if verbose and lenbefore - lenafter > 0:
+        print(f"Filtered {lenbefore - lenafter} intervals for {bed.fn}")
     return filtered

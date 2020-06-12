@@ -16,7 +16,7 @@ class ResidualBlock(nn.Module):
                 nn.Conv1d(in_channels, out_channels, kernel_size=1),
                 nn.BatchNorm1d(out_channels),
                 nn.ReLU()
-        ) if in_channels != out_channels else lambda x: x
+        ) if in_channels != out_channels else nn.Identity()
         self.bn = nn.BatchNorm1d(out_channels)
 
     def forward(self, x):

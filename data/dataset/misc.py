@@ -1,11 +1,12 @@
 from collections import defaultdict
+from itertools import chain
 from typing import Tuple, Dict, Optional
 
 import numpy as np
-import pyBigWig
+from utils import enrichment
 from pybedtools import BedTool, Interval
 
-from data.pod import BigWigMeta, ChIPseqReplicaMeta
+from data.pod import ChIPseqReplicaMeta, SeparatedReadsMeta, IntervalReads
 
 
 class PeaksIndex:
@@ -40,78 +41,115 @@ class PeaksIndex:
         return intersected
 
 
-# @dataclass(frozen=True)
-# class ItemMeta:
-#     target: str
-#     sampling: str
-#     peaks: PeaksIndex
-#     treatment: Tuple[BigWigMeta, ...]
-#     control: Tuple[BigWigMeta, ...]
-#     reftreatment: Tuple[BigWigMeta, ...]
-#     refcontrol: Tuple[BigWigMeta, ...]
-#
-#     @staticmethod
-#     def make(sampling, replica: ChIPseqReplicaMeta):
-#         bymode = lambda mode, files: tuple(f[mode] for f in files)
-#         peaks = BedTool(replica.peaks).sort().merge().sort()
-#         kwargs = {
-#             "target": replica.target, "sampling": sampling, "peaks": PeaksIndex(peaks),
-#             "reftreatment": bymode("original", replica.treatment),
-#             "refcontrol": bymode("original", replica.control),
-#             "treatment": bymode(sampling, replica.treatment),
-#             "control": bymode(sampling, replica.control),
-#         }
-#         return ItemMeta(**kwargs)
-
-
-# dummy enrichment computation. It is NOT read length / fragment size aware
-def enrichment(treatment: Tuple[BigWigMeta, ...], control: Tuple[BigWigMeta, ...],
-               reads: Dict[BigWigMeta, np.ndarray]) -> np.ndarray:
-    # cat and normalize reads
-    catnormalize = lambda bwmeta: np.sum([reads[bw] for bw in bwmeta], axis=0).astype(np.float64) / \
-                                  sum(bw.readlen * bw.numreads for bw in bwmeta)
-    eps = np.finfo(np.float64).eps
-    treatment, control = catnormalize(treatment), catnormalize(control)
-    enrichment = treatment / (treatment + control + eps)
-    return enrichment.astype(np.float32)
-
-
 class ChIPseqReplica:
-    def __init__(self, enrichment: BigWigMeta, peaks: Optional[str] = None, uid: str = ""):
+    def __init__(self, treatment: SeparatedReadsMeta, control: SeparatedReadsMeta,
+                 chrominfo: Dict[str, int], effective_genome_size: int, peaks: Optional[str] = None):
         if peaks is not None:
             self.peaks_index: Optional[PeaksIndex] = PeaksIndex(
                 BedTool(peaks), presorted_and_merged=False
             )
         else:
             self.peaks_index: Optional[PeaksIndex] = None
-        self.uid = uid
-        self._enrichmentfn = enrichment.path
-        self._enrichment = None
-        self._reread = False
-        self.reread_bigwig_on_query()
+        self.treatment = treatment
+        self.control = control
+        self.chrominfo = chrominfo
+        self.effective_genome_size = effective_genome_size
+        self._ndarrays: Dict[str, np.ndarray] = {}
 
-    @staticmethod
-    def frommeta(meta: ChIPseqReplicaMeta, sampling: str) -> 'ChIPseqReplica':
-        assert sampling in meta.enrichment
-        peaks = meta.peaks if sampling == "original" else None
-        uid = sorted(meta.treatment)
-        uid = uid[0] if len(uid) == 1 else ','.join(uid)
-        return ChIPseqReplica(meta.enrichment[sampling], peaks, uid)
+    def reread(self):
+        for path in chain(self.treatment.forward.values(), self.treatment.reverse.values(),
+                          self.control.forward.values(), self.control.reverse.values()):
+            # self._ndarrays[path] = np.load(path)
+            self._ndarrays[path] = np.memmap(path, dtype=np.int32, mode='r')
 
-    def _reread_bigwig(self):
-        self._enrichment = pyBigWig.open(self._enrichmentfn)
+    def _slice(self, forward, reverse, interval: Interval, five_slope: int, three_slope: int):
+        # TODO: coordinates correction for 1
+        # That is rather strange, but pure python bisect is faster than np.searchsorted
+        # Perhaps, searchsorted is heavy optimized for the batched search
+        from bisect import bisect_left, bisect_right
 
-    def reread_bigwig_on_query(self):
-        self._enrichment = None
-        self._reread = True
+        beginf = bisect_left(forward, interval.start - five_slope)
+        endf = bisect_right(forward, interval.end + three_slope, lo=beginf)
+        # forward = np.asarray(forward[beginf: endf])
+        forward = forward[beginf: endf]
 
-    def enrichment(self, interval: Interval) -> np.ndarray:
-        if self._reread:
-            self._reread_bigwig()
-            self._reread = False
+        beginr = bisect_left(reverse, interval.start - three_slope)
+        endr = bisect_right(reverse, interval.end + five_slope, lo=beginr)
+        reverse = reverse[beginr: endr]
+        return np.asarray(forward), np.asarray(reverse)
+        # return forward, reverse
+        # beginf = np.searchsorted(forward, interval.start - five_slope, side="left")
+        # endf = np.searchsorted(forward[beginf:], interval.end + three_slope, side="right") + beginf
+        # # forward = np.asarray(forward[beginf: endf])
+        # forward = forward[beginf: endf]
+        #
+        # beginr = np.searchsorted(reverse, interval.start - three_slope, side="left")
+        # endr = np.searchsorted(reverse[beginr:], interval.end + five_slope, side="right") + beginr
+        # reverse = reverse[beginr: endr]
+        # beginf = np.searchsorted(forward, interval.start - five_slope, side="left")
+        # endf = np.searchsorted(forward, interval.end + three_slope, side="right")
+        # # forward = np.asarray(forward[beginf: endf])
+        # forward = forward[beginf: endf]
+        #
+        # beginr = np.searchsorted(reverse, interval.start - three_slope, side="left")
+        # endr = np.searchsorted(reverse, interval.end + five_slope, side="right")
+        # reverse = reverse[beginr: endr]
+        # reverse = np.asarray(reverse[beginr: endr])
+        # return forward, reverse
 
-        chrom, start, end = interval.chrom, interval.start, interval.end
-        return self._enrichment.values(chrom, start, end, numpy=True)
+    def reads(self, bamreads: SeparatedReadsMeta, interval: Interval, five_slope: int, three_slope: int):
+        chr = interval.chrom
+        if len(self._ndarrays) == 0:
+            self.reread()
+
+        forward, reverse = self._ndarrays[bamreads.forward[chr]], self._ndarrays[bamreads.reverse[chr]]
+        forward, reverse = self._slice(forward, reverse, interval, five_slope, three_slope)
+        return IntervalReads(forward, reverse)
+
+    def enrichment(self, interval: Interval, treatment_reads: int, control_reads: int, fragment_size: int, *,
+                   treatment=None, control=None):
+        chr = interval.chrom
+        chromlen = self.chrominfo[chr]
+
+        # 1. fetch reads if needed
+        if treatment is None:
+            treatment = self.reads(self.treatment, interval, fragment_size, 0)
+        if control is None:
+            control = self.reads(self.control, interval, 5000, 5000)
+
+        # 2. treatment pileup
+        treatment_ends, treatment_pileup = enrichment.pileup(treatment.forward, treatment.reverse,
+                                                             five_extension=0, three_extension=fragment_size,
+                                                             leftmost_coord=0, rightmost_coord=chromlen,
+                                                             scale=1.0, baseline=0.0)
+
+        # 4. control lambda
+        half_fragment = fragment_size // 2
+        cends, cpileup = enrichment.pileup(control.forward, control.reverse,
+                                           five_extension=half_fragment, three_extension=half_fragment,
+                                           leftmost_coord=0, rightmost_coord=chromlen, scale=1.0, baseline=0.0)
+        cends1k, clambda1k = enrichment.pileup(control.forward, control.reverse,
+                                               five_extension=500, three_extension=500,
+                                               leftmost_coord=0, rightmost_coord=chromlen,
+                                               scale=fragment_size / 1000, baseline=0.0)
+        cends10k, clambda10k = enrichment.pileup(control.forward, control.reverse,
+                                                 five_extension=5000, three_extension=5000,
+                                                 leftmost_coord=0, rightmost_coord=chromlen,
+                                                 scale=fragment_size / 10000, baseline=0.0)
+
+        background_lambda = control_reads * fragment_size / self.effective_genome_size
+        treatment_control_ratio = treatment_reads / control_reads
+
+        cends, clambda = enrichment.per_interval_max([cends, cends1k, cends10k], [cpileup, clambda1k, clambda10k],
+                                                     scale=treatment_control_ratio, baseline=background_lambda)
+
+        # 5. enrichment
+        enrich_ends, enrich_values = enrichment.enrichment(treatment_ends, treatment_pileup, cends, clambda,
+                                                           pseudocount=0.0)
+
+        # 6. dense vector
+        result = enrichment.todense(enrich_ends, enrich_values, interval.start, interval.end)
+        return treatment, control, result
 
     def peaks(self, interval: Interval) -> np.ndarray:
         if self.peaks_index is None:
@@ -130,9 +168,9 @@ class ChIPseqReplica:
 
     def __getstate__(self):
         state = self.__dict__.copy()
-        state["_enrichment"] = None
+        del state["_ndarrays"]
         return state
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        self.reread_bigwig_on_query()
+        self._ndarrays = {}

@@ -26,6 +26,12 @@ warnings.simplefilter("ignore")
 EXPERIMENT = "/data/encode/H3K4me3/ENCSR849YFO/"
 REGION_SIZE = 25000
 
+# 1. Нужно считать риды и построить enrichment. сохранить его в формате bigbed
+# 2. Нужно по-хромасомно сделать предикт.
+# 3. Нужно сделать трешлохд по 0.5 и сохранить в формате bed результат
+# 4. Опционально - сделать bigbed
+
+
 
 # 1. parse json experiment meta
 replicas = parse.fromjson(EXPERIMENT)

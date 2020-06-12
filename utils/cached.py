@@ -1,4 +1,6 @@
 import os
+from collections import defaultdict
+
 import pysam
 import pickle
 from hashlib import md5
@@ -15,7 +17,7 @@ from torch.utils.data import DataLoader
 
 import data
 from data import hg19, dataset
-from data.pod import ChIPseqReplicaMeta, IntervalMeta
+from data.pod import ChIPseqReplicaMeta, IntervalMeta, SeparatedReadsMeta
 
 
 def make_regions(region_size: int, ambiguity_thr: float = 0.5):
@@ -60,43 +62,63 @@ def parse(experiments: Tuple[str, ...]):
     return replicas
 
 
-def make_dataset(intervals: str, replica: ChIPseqReplicaMeta, binsize: int,
-                 sampling: str) -> Tuple[ChIPseqReplicaMeta, IntervalMeta]:
-    hsh = f"{intervals}{replica}{binsize}{sampling}"
-    path = os.path.join("/tmp/", f"cached.make_dataset(hash={md5(hsh.encode()).hexdigest()}).pkl")
-
-    if not os.path.exists(path):
-        dst = dataset.ChIPseqReplicaTrainDataset(BedTool(intervals), replica, binsize, sampling)
-
-        annotation = ("3'utr", "5'utr", "exons", "introns", "upstream1k", "downstream1k", "intergenic")
-        annotation = {k: hg19.annotation.REGIONS[k].fn for k in annotation}
-        meta, todrop = dataset.filter.by_meta(dst, annotation, True)
-
-        dst.remove(todrop)
-        meta = np.delete(meta, todrop).tolist()
-
-        with open(path, 'wb') as file:
-            pickle.dump((dst, meta), file)
-
-    with open(path, 'rb') as file:
-        dst, meta = pickle.load(file)
-        dst.reread_bigwig_on_query()
-    return dst, meta
+# def make_dataset(intervals: str, replica: ChIPseqReplicaMeta, binsize: int,
+#                  sampling: str) -> Tuple[ChIPseqReplicaMeta, IntervalMeta]:
+#     hsh = f"{intervals}{replica}{binsize}{sampling}"
+#     path = os.path.join("/tmp/", f"cached.make_dataset(hash={md5(hsh.encode()).hexdigest()}).pkl")
+#
+#     if not os.path.exists(path):
+#         dst = dataset.ChIPseqReplicaTrainDataset(BedTool(intervals), replica, binsize, sampling)
+#
+#         annotation = ("3'utr", "5'utr", "exons", "introns", "upstream1k", "downstream1k", "intergenic")
+#         annotation = {k: hg19.annotation.REGIONS[k].fn for k in annotation}
+#         meta, todrop = dataset.filter.by_meta(dst, annotation, True)
+#
+#         dst.remove(todrop)
+#         meta = np.delete(meta, todrop).tolist()
+#
+#         with open(path, 'wb') as file:
+#             pickle.dump((dst, meta), file)
+#
+#     with open(path, 'rb') as file:
+#         dst, meta = pickle.load(file)
+#         dst.reread_bigwig_on_query()
+#     return dst, meta
 
 
 def make_trainloader(intervals: BedTool, replicas: Tuple[ChIPseqReplicaMeta, ...], binsize: int,
-                     batch_size: int, allsampling: Tuple[str, ...], threads: int) -> DataLoader:
-    allsampling = sorted(set(allsampling))
-    hsh = intervals.fn + ''.join(sorted(str(r) for r in replicas)) + str(binsize) + str(allsampling)
+                     batch_size: int, threads: int) -> DataLoader:
+    hsh = intervals.fn + ''.join(sorted(str(r) for r in replicas)) + str(binsize)
     path = os.path.join("/tmp/", f"cached.make_trainloader(hash={md5(hsh.encode()).hexdigest()}).pkl")
 
     threads = threads if threads >= 0 else cpu_count() + threads + 1
     if not os.path.exists(path):
-        result = Parallel(n_jobs=max(1, threads), verbose=1, batch_size=1)(
-            delayed(make_dataset)(intervals.fn, r, binsize, s) for r in replicas for s in allsampling
+        # 1. Turn bam files into separate reads coordinates
+        allbam_groups = set(tuple(r.treatment["original"] for r in replicas) +
+                            tuple(r.control["original"] for r in replicas))
+        separated_reads = Parallel(n_jobs=-1, verbose=1, batch_size=1)(
+            delayed(separate_reads)([f.path for f in files]) for files in allbam_groups
         )
-        dsts, metas = zip(*result)
-        concatdst = dataset.ConcatChIPseqDataset(dsts)
+        bamreads = {bgroup: reads for bgroup, reads in zip(allbam_groups, separated_reads)}
+
+        # 2. make dataset for each replica(original data, sampled version will be generated on the fly)
+        datasets = []
+        for replica in replicas:
+            treatment, tchrominfo = bamreads[replica.treatment["original"]]
+            control, cchrominfo = bamreads[replica.control["original"]]
+            assert treatment.numreads == sum(t.numreads for t in replica.treatment["original"]) and \
+                   control.numreads == sum(c.numreads for c in replica.control["original"])
+            assert set(tchrominfo.keys()) == set(cchrominfo.keys()) and \
+                   all(tchrominfo[k] == cchrominfo[k] for k in tchrominfo)
+
+            fragment_size = tuple(x.estimated_fragment_size for x in replica.treatment["original"])
+            datasets.append(dataset.ChIPseqReplicaTrainDataset(
+                replica.target, intervals, replica.peaks, treatment, control, tchrominfo, fragment_size,
+                binsize, hg19.annotation.EFFECTIVE_GENOME_SIZE
+            ))
+
+        # 3. Make single dataset for simplicity
+        concatdst = dataset.ConcatChIPseqDataset(datasets)
         sampler = torch.utils.data.BatchSampler(
             torch.utils.data.RandomSampler(concatdst), batch_size=batch_size, drop_last=False
         )
@@ -107,13 +129,8 @@ def make_trainloader(intervals: BedTool, replicas: Tuple[ChIPseqReplicaMeta, ...
 
     with open(path, 'rb') as file:
         concatdst, sampler = pickle.load(file)
-        for d in concatdst.datasets:  # type: dataset.ChIPseqReplicaTrainDataset
-            d.reread_bigwig_on_query()
-
-    # dst.add_augmentation(
-    #     partial(data.augment.shift, limits=(-0.5, 0.5)),
-    #     partial(data.augment.randreads, random_reads_fraction=0.15)
-    # )
+        # for d in concatdst.datasets:  # type: dataset.ChIPseqReplicaTrainDataset
+        #     d.reread_bigwig_on_query()
     return DataLoader(concatdst, batch_sampler=sampler, num_workers=threads, pin_memory=True)
 
 
@@ -125,17 +142,52 @@ def make_valloaders(intervals: BedTool, replicas: Tuple[ChIPseqReplicaMeta, ...]
 
     threads = threads if threads >= 0 else cpu_count() + threads + 1
     if not os.path.exists(path):
-        result = Parallel(n_jobs=max(1, threads), verbose=1, batch_size=1)(
-            delayed(make_dataset)(intervals.fn, r, binsize, s) for r in replicas for s in allsampling
+        # 1. Turn bam files into separate reads coordinates
+        allbam_groups = set(chain(*[r.treatment.values() for r in replicas], *[r.control.values() for r in replicas]))
+        separated_reads = Parallel(n_jobs=-1, verbose=1, batch_size=1)(
+            delayed(separate_reads)([f.path for f in files]) for files in allbam_groups
         )
-        dsts, _ = zip(*result)
+        bamreads = {bgroup: reads for bgroup, reads in zip(allbam_groups, separated_reads)}
+
+        # 2. make val dataset for each replica
+        datasets = []
+        for replica in replicas:
+            reftreatment, reftchrominfo = bamreads[replica.treatment["original"]]
+            refcontrol, refcchrominfo = bamreads[replica.control["original"]]
+            assert reftreatment.numreads == sum(t.numreads for t in replica.treatment["original"]) and \
+                   refcontrol.numreads == sum(c.numreads for c in replica.control["original"])
+            assert set(reftchrominfo.keys()) == set(refcchrominfo.keys()) and \
+                   all(reftchrominfo[k] == refcchrominfo[k] for k in reftchrominfo)
+
+            reffragment_size = int(np.mean([x.estimated_fragment_size for x in replica.treatment["original"]]))
+            for sampling in allsampling:
+                sampledtreatment, sampledtchrominfo = bamreads[replica.treatment[sampling]]
+                sampledcontrol, sampledcchrominfo = bamreads[replica.control[sampling]]
+                assert sampledtreatment.numreads == sum(t.numreads for t in replica.treatment[sampling]) and \
+                       sampledcontrol.numreads == sum(c.numreads for c in replica.control[sampling])
+                assert set(sampledtchrominfo.keys()) == set(sampledcchrominfo.keys()) and \
+                       all(sampledtchrominfo[k] == sampledcchrominfo[k] for k in reftchrominfo)
+
+                assert set(sampledtchrominfo.keys()) == set(reftchrominfo.keys()) and \
+                       all(sampledtchrominfo[k] == reftchrominfo[k] for k in reftchrominfo)
+
+                sampledfragment_size = int(np.mean([x.estimated_fragment_size for x in replica.treatment[sampling]]))
+
+                taccessions = replica.accesions.treatment
+                uid = ",".join(taccessions) if len(taccessions) > 1 else taccessions[0]
+                datasets.append(dataset.ChIPseqReplicaValDataset(
+                    uid, replica.accesions.experiment,
+                    replica.target, sampling, intervals, replica.peaks,
+                    reftreatment, refcontrol, reffragment_size,
+                    sampledtreatment, sampledcontrol, sampledfragment_size,
+                    reftchrominfo, binsize, hg19.annotation.EFFECTIVE_GENOME_SIZE
+                ))
+
         with open(path, 'wb') as file:
-            pickle.dump(dsts, file)
+            pickle.dump(datasets, file)
 
     with open(path, 'rb') as file:
         valdatasets = pickle.load(file)
-        for dst in valdatasets:
-            dst.reread_bigwig_on_query()
 
     valloaders = {
         dst: DataLoader(dst, sampler=torch.utils.data.SequentialSampler(dst), batch_size=batch_size,
@@ -157,32 +209,51 @@ class _ReadsSeparationContext:
         for chrom, positions in self.start_positions.items():
             chrompath = os.path.join(path, chrom + ".npy")
             positions = np.asarray(positions, dtype=np.int32)
+            positions = np.sort(positions)
             np.save(chrompath, positions)
             paths[chrom] = chrompath
         return paths
 
 
-def separate_reads(file):
-    assert os.path.isfile(file)
-    targetdir = os.path.join("/tmp/", f"cached.separate_reads({md5(file.encode()).hexdigest()})")
+def separate_reads(files: Tuple[str, ...]) -> Tuple[SeparatedReadsMeta, Dict[str, int]]:
+    assert all(os.path.isfile(f) for f in files)
+    files = sorted(files)
+    targetdir = os.path.join("/tmp/", f"cached.separate_reads({md5(''.join(files).encode()).hexdigest()})")
 
     forwarddir = os.path.join(targetdir, "forward")
     reversedir = os.path.join(targetdir, "reverse")
     chrominfo = os.path.join(targetdir, "chromosomes.pkl")
+    meta = os.path.join(targetdir, "meta.pkl")
 
     if not os.path.exists(targetdir):
-        samfile = pysam.AlignmentFile(file, "rb")
+        chromosomes = {}
+        numreads = 0
+        readlen = None
+        forward, reverse = _ReadsSeparationContext(defaultdict(list)), \
+                           _ReadsSeparationContext(defaultdict(list))
 
-        chromosomes = {chr: samfile.get_reference_length(chr) for chr in samfile.references}
+        # concat reads from all files
+        for file in files:
+            samfile = pysam.AlignmentFile(file, "rb")
+            for chr in samfile.references:
+                length = samfile.get_reference_length(chr)
+                if chr in chromosomes:
+                    assert chromosomes[chr] == length
+                else:
+                    chromosomes[chr] = length
 
-        forward, reverse = _ReadsSeparationContext({chr: [] for chr in chromosomes}), \
-                           _ReadsSeparationContext({chr: [] for chr in chromosomes})
+            for read in samfile.fetch():    # type: pysam.AlignedRead
+                numreads += 1
+                if readlen is None:
+                    readlen = read.query_length
+                assert readlen == read.query_length
 
-        for read in samfile.fetch():    # type: pysam.AlignedRead
-            if read.is_reverse:
-                reverse.add(read.reference_name, read.reference_end)
-            else:
-                forward.add(read.reference_name, read.reference_start)
+                if read.is_reverse:
+                    reverse.add(read.reference_name, read.reference_end)
+                else:
+                    forward.add(read.reference_name, read.reference_start)
+
+        assert readlen is not None and numreads > 0
 
         os.makedirs(forwarddir, exist_ok=False)
         forward.serialize(forwarddir)
@@ -193,15 +264,23 @@ def separate_reads(file):
         with open(chrominfo, 'wb') as file:
             pickle.dump(chromosomes, file)
 
-    assert os.path.isdir(forwarddir) and os.path.isdir(reversedir) and os.path.isfile(chrominfo)
+        with open(meta, "wb") as file:
+            pickle.dump((numreads, readlen), file)
+
+    assert os.path.isdir(forwarddir) and os.path.isdir(reversedir) and \
+           os.path.isfile(chrominfo) and os.path.isfile(meta)
 
     with open(chrominfo, 'rb') as file:
         chromosomes = pickle.load(file)
+
+    with open(meta, 'rb') as file:
+        numreads, readlen = pickle.load(file)
 
     result = {"forward": {}, "reverse": {}, "chromosomes": chromosomes}
     for key, folder in [("forward", forwarddir), ("reverse", reversedir)]:
         for file in os.listdir(folder):
             chrom = file.replace(".npy", "")
             result[key][chrom] = os.path.join(folder, file)
+
     assert set(result["forward"].keys()) == set(result["reverse"].keys()) == set(result["chromosomes"].keys())
-    return result
+    return SeparatedReadsMeta(result["forward"], result["reverse"], readlen, numreads), result["chromosomes"]
