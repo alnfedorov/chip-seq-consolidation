@@ -1,24 +1,21 @@
 import warnings
-import torch
-
-from data import dataset, parse
-from data import hg19
-from utils import metrics, trainval, cached
-from data.pod import *
-from models import NaiveCNN
-from ignite.engine import Engine, Events
 from functools import partial
+
+import torch
 from ignite.contrib.handlers import ProgressBar
-from ignite.metrics import RunningAverage
-from utils.losses import dice_loss, focal_loss
+from ignite.engine import Engine, Events
+
+from models import NaiveCNN
+from utils import metrics, trainval, cached
+from utils.losses import dice_loss
 
 warnings.simplefilter("ignore")
 
 ALL_SAMPLING = ("original", "1m", "5m", "10m", "25m")
 BIN_SIZE = 25
 BATCH_SIZE = 256
-REGION_SIZE = 25 * 1024 * 2
-THREADS = -1
+REGION_SIZE = 25 * 1024
+THREADS = -2
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # 1. make
@@ -26,30 +23,29 @@ regions = cached.make_regions(REGION_SIZE)
 
 train_experiments = (
     # H3K4me3
-    # "/data/encode/H3K4me3/ENCSR849YFO/",
+    "/data/encode/H3K4me3/ENCSR153NDQ",
     "/data/encode/H3K4me3/ENCSR206STN",
+    "/data/encode/H3K4me3/ENCSR361FWQ",
 )
 trainloader = cached.make_trainloader(regions, cached.parse(train_experiments), BIN_SIZE, BATCH_SIZE, THREADS)
 
 val_experiments = (
     # H3K4me3
-    "/data/encode/H3K4me3/ENCSR361FWQ",
+    "/data/encode/H3K4me3/ENCSR652QNW",
+    "/data/encode/H3K4me3/ENCSR930HLX",
+    "/data/encode/H3K4me3/ENCSR956CTX",
 )
-valloaders = cached.make_valloaders(regions, cached.parse(val_experiments), BIN_SIZE, BATCH_SIZE * 2, ALL_SAMPLING, THREADS)
+valloaders = cached.make_valloaders(regions, cached.parse(val_experiments), BIN_SIZE, BATCH_SIZE * 2, ALL_SAMPLING,
+                                    THREADS)
 
 model = NaiveCNN().to(DEVICE)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.1)
 
-
-# What do I want to do?
-# I want per-dataset metric averaged
-# over metric + sampling, over metric, over sampling, over all
-# How to understand/manage this problem? The problem is unique identification for the replicas
-
-def losspeaks(y_pred, y):
+def losspeaks2(y_pred, y):
     assert y_pred.shape == y.shape
-    loss = -y * y_pred   # y_pred is a log(q) already
+    loss = -y * y_pred  # y_pred is a log(q) already
 
     # in the usual case I would simply increase the weight of the corrseponding positions by some constant factor
     # Is it worse it? To always increase by constant factor? I would say otherwise. It is better to sample with balance
@@ -67,37 +63,28 @@ def losspeaks(y_pred, y):
         weights[mask] = 0
     return loss * weights.reshape(1, 2, 1)
 
+
 kldivloss = torch.nn.KLDivLoss(reduction='none')
 # losspeaks = lambda y_pred, y: (focal_loss(y_pred, y).mean(dim=2) + dice_loss(y_         pred, y)).mean(dim=1)
 losspeaks = lambda y_pred, y: dice_loss(y_pred, y) / 2 + (kldivloss(y_pred, y) * 50).mean(dim=[1, 2])
 # losspeaks = lambda y_pred, y: focal_loss(y_pred, y)
 loss_enrichment = torch.nn.MSELoss(reduction='none')
 trainer = Engine(partial(
-    trainval.doiteration, loss_enrichment=loss_enrichment, loss_peaks=losspeaks, model=model, device=DEVICE, optimizer=optimizer
+    trainval.doiteration, loss_enrichment=loss_enrichment, loss_peaks=losspeaks, model=model, device=DEVICE,
+    optimizer=optimizer
 ))
+metrics.attach(trainer, "train")
+ProgressBar(ncols=100).attach(trainer, metric_names='all')
+
 trainval.attach_validation(
-    trainer, partial(trainval.doiteration, loss_enrichment=loss_enrichment, loss_peaks=losspeaks, model=model, device=DEVICE),
+    trainer,
+    partial(trainval.doiteration, loss_enrichment=loss_enrichment, loss_peaks=losspeaks, model=model, device=DEVICE),
     model, valloaders
 )
-metrics.attach(trainer, "train")
 trainval.attach_logger(trainer)
-ProgressBar(ncols=100).attach(trainer, metric_names='all')
+
 trainer.add_event_handler(Events.EPOCH_COMPLETED, lambda engine: engine.state.metrics.clear())
-trainer.run(trainloader, max_epochs=10)
+trainer.add_event_handler(Events.EPOCH_COMPLETED, lambda engine: scheduler.step())
 
-torch.save(model, "/data/model.pth")
-
-# # There is a problem! I need BALANCED big-wig files.
-# # What is a model input?
-# # What is a model output?  called-peaks + enrichment over control
-#
-# # How to normalize enrichment over control? Number of reads is variable - for sure.
-# # What is about computing probability density functions for bckg and fg reads?
-# # bckg = bckg / (total_bckg * readlen), fg = fg / (total_fg * readlen). (Perhaps it must be a bit more complicated)
-# # Ok, it normalizes read count. In a sense that it is a valid probability density function now and doesn't depend on the number of reads.
-# # What do I wan't to predict? Called peaks, for sure. What is else? Something that allows me to easily predict reads distribution
-# # 5'--------------------------3'
-# #       5'------------------------------------3'
-# #               5'----------------3'
-# #           5'--------------3'
-# # What are this probabilities about? It is a probability for the given position to get sequenced during ChIP-seq(control ChIP-seq)
+trainer.run(trainloader, max_epochs=120)
+torch.save(model, "/data/model-final.pth")

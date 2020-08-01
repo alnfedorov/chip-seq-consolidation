@@ -40,6 +40,9 @@ def doiteration(engine: Engine, batch, *, loss_enrichment, loss_peaks, device, m
 def attach_validation(engine: Engine, doiter, model: torch.nn.Module, dataloaders: Dict[str, DataLoader]):
     def doval(engine: Engine, valengines: Dict[ChIPseqReplicaValDataset, Engine],
               valloaders: Dict[ChIPseqReplicaValDataset, DataLoader]):
+        if engine.state.epoch % 10 != 0 or engine.state.epoch == 0:
+            return
+
         torch.cuda.empty_cache()
         model.eval()
 

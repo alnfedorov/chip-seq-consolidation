@@ -96,7 +96,7 @@ def make_trainloader(intervals: BedTool, replicas: Tuple[ChIPseqReplicaMeta, ...
         # 1. Turn bam files into separate reads coordinates
         allbam_groups = set(tuple(r.treatment["original"] for r in replicas) +
                             tuple(r.control["original"] for r in replicas))
-        separated_reads = Parallel(n_jobs=-1, verbose=1, batch_size=1)(
+        separated_reads = Parallel(n_jobs=6, verbose=1, batch_size=1)(
             delayed(separate_reads)([f.path for f in files]) for files in allbam_groups
         )
         bamreads = {bgroup: reads for bgroup, reads in zip(allbam_groups, separated_reads)}
@@ -144,7 +144,7 @@ def make_valloaders(intervals: BedTool, replicas: Tuple[ChIPseqReplicaMeta, ...]
     if not os.path.exists(path):
         # 1. Turn bam files into separate reads coordinates
         allbam_groups = set(chain(*[r.treatment.values() for r in replicas], *[r.control.values() for r in replicas]))
-        separated_reads = Parallel(n_jobs=-1, verbose=1, batch_size=1)(
+        separated_reads = Parallel(n_jobs=6, verbose=1, batch_size=1)(
             delayed(separate_reads)([f.path for f in files]) for files in allbam_groups
         )
         bamreads = {bgroup: reads for bgroup, reads in zip(allbam_groups, separated_reads)}

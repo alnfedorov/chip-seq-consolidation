@@ -1,40 +1,40 @@
 import numpy as np
+
 from data.pod import IntervalReads
 
 
-def randreads(*, minreads=1e6, maxreads=None):
+def randreads(*, minreads=1e6, maxreads=30e6):
     return np.random.randint(minreads, maxreads + 1)
 
 
-def subsample(reads: IntervalReads, before: int, after: int, replace=False):
-    p = after / before
-    assert p <= 1 or replace
+def subsample(reads: IntervalReads, p: float, replace=False):
+    assert p <= 1 or replace, f"p={p}, replace={replace}"
     forward = np.random.choice(reads.forward, int(round(reads.forward.size * p)), replace=replace)
     reverse = np.random.choice(reads.reverse, int(round(reads.reverse.size * p)), replace=replace)
     return IntervalReads(forward, reverse)
 
 
-def lowenrichment(treatment: IntervalReads, treatment_numreads: int,
-                  control: IntervalReads, control_numreads: int, noise: float):
-    noise_numreads = noise * treatment_numreads / (1 - noise)
-    noise_numreads = int(round(noise_numreads))
-    maxreads_by_noise = noise_numreads + treatment_numreads
+def lowenrichment(treatment: IntervalReads, control: IntervalReads, enrichfrac: float):
+    # treatment / (treatment + control) = x
+    # treatment = x * treatment + x * control
+    # treatment * (1-x) = x * control
+    # control = treatment * (1 - x) / x
+    if treatment.numreads == 0 or control.numreads == 0:
+        return treatment
 
-    total_numreads = randreads(maxreads=maxreads_by_noise)
-    signal_numreads = int(round(total_numreads * (1 - noise)))
-    noise_numreads = int(round(total_numreads * noise))
-
-    signal = subsample(treatment, before=treatment_numreads, after=signal_numreads)
-    if noise_numreads > control_numreads:
-        noise = subsample(control, before=control_numreads, after=noise_numreads, replace=True)
-    else:
-        noise = subsample(control, before=control_numreads, after=noise_numreads, replace=False)
+    tosample = treatment.numreads * (1 - enrichfrac) / enrichfrac
+    control = subsample(control, p=tosample / control.numreads, replace=control.numreads < tosample)
 
     lowenrich = IntervalReads(
-        forward=np.concatenate([signal.forward, noise.forward]),
-        reverse=np.concatenate([signal.reverse, noise.reverse])
+        forward=np.concatenate([treatment.forward, control.forward]),
+        reverse=np.concatenate([treatment.reverse, control.reverse])
     )
-    return total_numreads, lowenrich
+    if treatment.numreads > 100 and control.numreads > 100:
+        assert abs(treatment.numreads / lowenrich.numreads - enrichfrac) < 0.01
+
+    # subsample to the original depth
+    lowenrich = subsample(lowenrich, p=treatment.numreads / lowenrich.numreads)
+    return lowenrich
 
 
 def shift(reads: IntervalReads, limits):

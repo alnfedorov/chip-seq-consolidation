@@ -15,7 +15,7 @@ from utils import bed
 def _consensus(meta: dict, root: str, balcklisted: str, consensusfn, minpeaks: int = 20):
     # 1. make consensus bed files, simple strategy -> weighted majority voting
     sampling = "original"
-    weighting = {"pepr": len(meta["replicates"]), "macs2": 1, "epic2": 1, "peakranger": 1}
+    weighting = {"pepr": len(meta["replicates"]), "macs2": 1, "epic2": 1, "peakranger": 1, "homer": 1}
 
     bedfiles = []
     bedweights = []
@@ -47,8 +47,9 @@ def _consensus(meta: dict, root: str, balcklisted: str, consensusfn, minpeaks: i
     fname = tempfile.mkstemp()[1]
     consensus = consensus.subtract(
         BedTool(balcklisted).sort()
-    ).sort().saveas(fname).fn
-    return consensus
+    ).merge(d=250).filter(lambda reg: reg.length >= 250).sort().saveas(fname)
+    print(f"There are {len(consensus)} regions at all")
+    return consensus.fn
 
 
 def fromjson(root: str, blacklisted: str = BLACKLISTED.fn,

@@ -1,15 +1,15 @@
-import numpy as np
-import pyBigWig
-import utils
-from torch.utils.data import Dataset, ConcatDataset
-from data.pod import IntervalMeta, ChIPseqReplicaMeta, SeparatedReadsMeta
-from .misc import ChIPseqReplica, IntervalReads
-from tqdm import tqdm
-from typing import Callable, Generator, Tuple, Optional
-from pybedtools import BedTool, Interval
-from itertools import groupby, chain
+from itertools import groupby
 from typing import Dict, List
+from typing import Tuple
+
+import numpy as np
+from pybedtools import BedTool, Interval
+from torch.utils.data import Dataset
+
+import utils
+from data.pod import SeparatedReadsMeta
 from utils import augreads
+from .misc import ChIPseqReplica
 
 
 class ChIPseqReplicaTrainDataset(Dataset):
@@ -36,36 +36,44 @@ class ChIPseqReplicaTrainDataset(Dataset):
         assert 0 <= idx < len(self)
         interval = self.intervals[idx]
 
-        # 1. Fetch reference reads and enrichment
-        reffragment_size = sum(self.fragments_sizes) / len(self.fragments_sizes)
-        reftreatment_numreads, refcontrol_numreads = self._dataset.treatment.numreads, self._dataset.control.numreads
+        # 1. reference enrichment
+        reffragment_size = sum(self.fragments_sizes) // len(self.fragments_sizes)
+        reftreatment, refcontrol, refenrichment = self._dataset.enrichment(interval, reffragment_size)
 
-        treatment, control, refenrichment = self._dataset.enrichment(interval,
-                                                                     reftreatment_numreads, refcontrol_numreads,
-                                                                     reffragment_size)
-        # 2. Randomize fragment size
+        # 2. augment treatment reads
+        shift_limits = (-75, 75)  # randomly shift by half of the nucleosome size
+        subsampleto = augreads.randreads(maxreads=self._dataset.treatment.numreads)
+        treatment = augreads.subsample(reftreatment, p=subsampleto / self._dataset.treatment.numreads)
+
+        # mixin treatment and control to have treatment / (treatment + control) = enrichfrac
+        enrichfrac = np.random.uniform(0.65, 1)
+        treatment = augreads.lowenrichment(treatment, refcontrol, enrichfrac)
+        treatment = augreads.shift(treatment, shift_limits)
+
+        # 3. augment control reads
+        if subsampleto < self._dataset.control.numreads:
+            subsampleto = augreads.randreads(minreads=subsampleto, maxreads=self._dataset.control.numreads)
+            control = augreads.subsample(refcontrol, p=subsampleto / self._dataset.control.numreads)
+        else:
+            control = augreads.subsample(refcontrol, p=subsampleto / self._dataset.control.numreads, replace=True)
+        control = augreads.shift(control, shift_limits)
+
+        # 4. calculate the enrichment
         # TODO: Use log-normal distribution
         # https://en.wikipedia.org/wiki/Log-normal_distribution
         # https://github.com/fnaumenko/isChIP
         # https://github.com/fnaumenko/bioStat/blob/master/pict/PEdistribs_medium.png
         minfs, maxfs = min(self.fragments_sizes), max(self.fragments_sizes)
-        fragment_size = np.random.randint(min(minfs, 100), max(200 + 1, maxfs + 1))
+        fragment_size = np.random.randint(min(minfs, 150), max(250 + 1, maxfs + 1))
 
-        shift_limits = (-75, 75)    # randomly shift by half of the nucleosome size
-        # treatment_numreads = augreads.randreads(maxreads=reftreatment_numreads)
-        # treatment = augreads.subsample(treatment, before=reftreatment_numreads, after=treatment_numreads)
-        noise = np.random.random() * 0.9
-        # mixin treatment and control to have *noise* ratio between treatment and control
-        treatment_numreads, treatment = augreads.lowenrichment(treatment, reftreatment_numreads, control, refcontrol_numreads, noise)
-        treatment = augreads.shift(treatment, shift_limits)
-
-        control_numreads = augreads.randreads(maxreads=refcontrol_numreads)
-        control = augreads.subsample(control, before=refcontrol_numreads, after=control_numreads)
-        control = augreads.shift(control, shift_limits)
-
-        *_, enrichment = self._dataset.enrichment(interval,
-                                                  treatment_numreads, control_numreads,
-                                                  fragment_size, treatment=treatment, control=control)
+        chromlen = self._dataset.chrominfo[interval.chrom]
+        enrich_ends, enrich_values = utils.enrichment.endtoend(chromlen, fragment_size,
+                                                               self._dataset.effective_genome_size,
+                                                               self._dataset.treatment.numreads,
+                                                               self._dataset.control.numreads,
+                                                               treatment.forward, treatment.reverse,
+                                                               control.forward, control.reverse)
+        enrichment = utils.enrichment.todense(enrich_ends, enrich_values, interval.start, interval.end)
 
         assert enrichment.shape == refenrichment.shape and refenrichment.ndim == 1
         nbins = interval.length // self.binsize
@@ -118,15 +126,8 @@ class ChIPseqReplicaValDataset(Dataset):
         assert 0 <= idx < len(self)
         interval = self.intervals[idx]
 
-        reftreatment_numreads, refcontrol_numreads = self._reference.treatment.numreads, \
-                                                     self._reference.control.numreads
-        *_, refenrichment = self._reference.enrichment(interval, reftreatment_numreads, refcontrol_numreads,
-                                                       self._reffragment_size)
-
-        treatment_numreads, control_numreads = self._sampled.treatment.numreads, \
-                                               self._sampled.control.numreads
-        *_, enrichment = self._sampled.enrichment(interval, treatment_numreads, control_numreads,
-                                                  self._sampledfragment_size)
+        *_, refenrichment = self._reference.enrichment(interval, self._reffragment_size)
+        *_, enrichment = self._sampled.enrichment(interval, self._sampledfragment_size)
 
         assert enrichment.shape == refenrichment.shape and refenrichment.ndim == 1
         nbins = interval.length // self.binsize

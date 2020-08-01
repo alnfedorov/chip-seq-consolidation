@@ -38,6 +38,10 @@ class IntervalReads:
     forward: np.ndarray
     reverse: np.ndarray
 
+    @property
+    def numreads(self):
+        return self.forward.size + self.reverse.size
+
 
 @dataclass(frozen=True)
 class AccessionInfo:

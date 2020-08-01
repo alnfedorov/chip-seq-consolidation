@@ -30,46 +30,60 @@ class NaiveCNN(nn.Module):
         super().__init__()
         mul = 2
         self.encoder_block1 = nn.Sequential(
-            ResidualBlock(1, int(8 * mul), kernel_size=3, padding=1),
-            ResidualBlock(int(8 * mul), int(16 * mul), kernel_size=3, padding=1)
+            ResidualBlock(1, int(8 * mul), kernel_size=129, padding=64),
+            ResidualBlock(int(8 * mul), int(8 * mul), kernel_size=129, padding=64),
+            ResidualBlock(int(8 * mul), int(16 * mul), kernel_size=11, padding=5),
+            ResidualBlock(int(16 * mul), int(16 * mul), kernel_size=11, padding=5),
+            ResidualBlock(int(16 * mul), int(16 * mul), kernel_size=11, padding=5)
         )
         self.pool1 = nn.MaxPool1d(kernel_size=4)
         self.encoder_block2 = nn.Sequential(
-            ResidualBlock(int(16 * mul), int(16 * mul), kernel_size=3, padding=1),
-            ResidualBlock(int(16 * mul), int(32 * mul), kernel_size=3, padding=1)
+            ResidualBlock(int(16 * mul), int(16 * mul), kernel_size=11, padding=5),
+            ResidualBlock(int(16 * mul), int(32 * mul), kernel_size=11, padding=5),
+            ResidualBlock(int(32 * mul), int(32 * mul), kernel_size=11, padding=5),
+            ResidualBlock(int(32 * mul), int(32 * mul), kernel_size=11, padding=5),
         )
         self.pool2 = nn.MaxPool1d(kernel_size=4)
         self.encoder_block3 = nn.Sequential(
-            ResidualBlock(int(32 * mul), int(32 * mul), kernel_size=3, padding=1),
-            ResidualBlock(int(32 * mul), int(64 * mul), kernel_size=3, padding=1)
+            ResidualBlock(int(32 * mul), int(32 * mul), kernel_size=5, padding=2),
+            ResidualBlock(int(32 * mul), int(64 * mul), kernel_size=5, padding=2),
+            ResidualBlock(int(64 * mul), int(64 * mul), kernel_size=5, padding=2),
+            ResidualBlock(int(64 * mul), int(64 * mul), kernel_size=5, padding=2),
         )
         self.pool3 = nn.MaxPool1d(kernel_size=4)
         self.encoder_block4 = nn.Sequential(
             ResidualBlock(int(64 * mul), int(64 * mul), kernel_size=3, padding=1),
-            ResidualBlock(int(64 * mul), int(128 * mul), kernel_size=3, padding=1)
+            ResidualBlock(int(64 * mul), int(128 * mul), kernel_size=3, padding=1),
+            ResidualBlock(int(128 * mul), int(128 * mul), kernel_size=3, padding=1),
+            ResidualBlock(int(128 * mul), int(128 * mul), kernel_size=3, padding=1)
         )
-
         self.upsample1 = nn.Upsample(scale_factor=4)
         self.decoder_block1 = nn.Sequential(
             nn.Conv1d(int(128 * mul) + int(64 * mul), int(128 * mul), kernel_size=1),
             nn.BatchNorm1d(int(128 * mul)),
-            ResidualBlock(int(128 * mul), int(64 * mul), kernel_size=3, padding=1),
-            ResidualBlock(int(64 * mul), int(64 * mul), kernel_size=3, padding=1)
+            nn.ReLU(),
+            ResidualBlock(int(128 * mul), int(64 * mul), kernel_size=5, padding=2),
+            ResidualBlock(int(64 * mul), int(64 * mul), kernel_size=5, padding=2),
+            ResidualBlock(int(64 * mul), int(64 * mul), kernel_size=5, padding=2)
         )
         self.upsample2 = nn.Upsample(scale_factor=4)
         self.decoder_block2 = nn.Sequential(
             nn.Conv1d(int(64 * mul) + int(32 * mul), int(64 * mul), kernel_size=1),
             nn.BatchNorm1d(int(64 * mul)),
-            ResidualBlock(int(64 * mul), int(32 * mul), kernel_size=3, padding=1),
-            ResidualBlock(int(32 * mul), int(32 * mul), kernel_size=3, padding=1)
+            nn.ReLU(),
+            ResidualBlock(int(64 * mul), int(32 * mul), kernel_size=11, padding=5),
+            ResidualBlock(int(32 * mul), int(32 * mul), kernel_size=11, padding=5),
+            ResidualBlock(int(32 * mul), int(32 * mul), kernel_size=11, padding=5)
         )
         self.upsample3 = nn.Upsample(scale_factor=4)
         self.decoder_block3 = nn.Sequential(
             nn.Conv1d(int(32 * mul) + int(16 * mul), int(32 * mul), kernel_size=1),
-            nn.BatchNorm1d(int(32 * mul)),
-            ResidualBlock(int(32 * mul), int(16 * mul), kernel_size=3, padding=1),
-            ResidualBlock(int(16 * mul), int(8 * mul), kernel_size=3, padding=1),
-            nn.Conv1d(int(8 * mul), 3, kernel_size=3, padding=1)
+            nn.ReLU(),
+            ResidualBlock(int(32 * mul), int(16 * mul), kernel_size=11, padding=5),
+            ResidualBlock(int(16 * mul), int(16 * mul), kernel_size=11, padding=5),
+            ResidualBlock(int(16 * mul), int(8 * mul), kernel_size=11, padding=5),
+            ResidualBlock(int(8 * mul), int(8 * mul), kernel_size=129, padding=64),
+            nn.Conv1d(int(8 * mul), 3, kernel_size=129, padding=64)
         )
 
     def forward(self, x, **kwargs):

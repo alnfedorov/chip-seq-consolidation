@@ -1,6 +1,6 @@
 import numba
 import numpy as np
-from numba.core.types import int32, int64, float32
+from numba.core.types import int32, float32
 
 
 @numba.jit(cache=True, nopython=True, nogil=True)
@@ -59,12 +59,12 @@ def _dopileup(start_coords, end_coords, rightmost_coord: int32, scale: float32, 
     assert pileup == 0
 
     # force intervals to occupy all space
-    if ends_of_intervals[real_len-1] < rightmost_coord:
+    if ends_of_intervals[real_len - 1] < rightmost_coord:
         ends_of_intervals[real_len] = rightmost_coord
         values[real_len] = 0
         real_len += 1
 
-    assert ends_of_intervals[real_len-1] == rightmost_coord
+    assert ends_of_intervals[real_len - 1] == rightmost_coord
     return ends_of_intervals[:real_len], values[:real_len]
 
 
@@ -117,6 +117,9 @@ def pileup(forward_reads_starts: np.ndarray, reverse_reads_starts: np.ndarray,
 @numba.jit("float32[::1](int32[::1], float32[::1], int32, int32)", cache=True, nopython=True, nogil=True)
 def todense(ends_of_intervas, values, dense_start, dense_end):
     assert ends_of_intervas.size == values.size
+    if ends_of_intervas.size == 0:
+        return np.zeros(dense_end - dense_start, dtype=np.float32)
+
     result = np.empty(dense_end - dense_start, dtype=np.float32)
     begin = dense_start
     for end, value in zip(ends_of_intervas, values):
@@ -272,3 +275,43 @@ def enrichment(treatment_endcoords, treatment_values, control_endcoords, control
     assert treatment_ind == treatment_values.size and control_ind == control_values.size
     assert res_ends[real_len - 1] == treatment_endcoords[-1] == control_endcoords[-1]
     return res_ends[:real_len], res_values[:real_len]
+
+
+# @numba.jit(cache=True, nopython=True, nogil=True)
+def endtoend(chromlen: int32, fragment_size: int32, effective_genome_size: float32,
+             alltreatment_reads: int32, allcontrol_reads: int,
+             treatment_forward: np.ndarray, treatment_reverse: np.ndarray,
+             control_forward: np.ndarray, control_reverse: np.ndarray):
+    """alltreatment_reads and allcontrol_reads ARE FROM THE WHOLE EXPERIMENT, NOT ONLY THIS CHR"""
+    if treatment_forward.size == 0 and treatment_reverse.size == 0:
+        return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.float32)
+
+    # 1. treatment pileup
+    treatment_ends, treatment_pileup = pileup(treatment_forward, treatment_reverse,
+                                              five_extension=0, three_extension=fragment_size,
+                                              leftmost_coord=0, rightmost_coord=chromlen,
+                                              scale=1.0, baseline=0.0)
+    # 2. control lambda
+    half_fragment = fragment_size // 2
+    cends, cpileup = pileup(control_forward, control_reverse,
+                            five_extension=half_fragment, three_extension=half_fragment,
+                            leftmost_coord=0, rightmost_coord=chromlen, scale=1.0, baseline=0.0)
+    cends1k, clambda1k = pileup(control_forward, control_reverse,
+                                five_extension=500, three_extension=500,
+                                leftmost_coord=0, rightmost_coord=chromlen,
+                                scale=fragment_size / 1000, baseline=0.0)
+    cends10k, clambda10k = pileup(control_forward, control_reverse,
+                                  five_extension=5000, three_extension=5000,
+                                  leftmost_coord=0, rightmost_coord=chromlen,
+                                  scale=fragment_size / 10000, baseline=0.0)
+
+    background_lambda = allcontrol_reads * fragment_size / effective_genome_size
+    treatment_control_ratio = alltreatment_reads / allcontrol_reads
+
+    cends, clambda = per_interval_max([cends, cends1k, cends10k], [cpileup, clambda1k, clambda10k],
+                                      scale=treatment_control_ratio, baseline=background_lambda)
+
+    # 3. enrichment
+    enrich_ends, enrich_values = enrichment(treatment_ends, treatment_pileup, cends, clambda,
+                                            pseudocount=0.0)
+    return enrich_ends, enrich_values

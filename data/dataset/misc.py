@@ -1,16 +1,17 @@
 from collections import defaultdict
 from itertools import chain
-from typing import Tuple, Dict, Optional
+from typing import Dict, Optional
 
 import numpy as np
-from utils import enrichment
 from pybedtools import BedTool, Interval
 
-from data.pod import ChIPseqReplicaMeta, SeparatedReadsMeta, IntervalReads
+from data.pod import SeparatedReadsMeta, IntervalReads
+from utils import enrichment
 
 
 class PeaksIndex:
     """Helper class to make fast in-memory intersections between peaks and arbitrary intervals"""
+
     def __init__(self, bed: BedTool, presorted_and_merged=True):
         if not presorted_and_merged:
             bed = bed.sort().merge().sort()
@@ -25,6 +26,8 @@ class PeaksIndex:
 
     def intersect(self, interval: Interval):
         intersected = []
+        if interval.chrom not in self.index:
+            return intersected
         starts, ends = self.index[interval.chrom]
         ind = np.searchsorted(starts, interval.start)
         if ind > 0:
@@ -97,7 +100,8 @@ class ChIPseqReplica:
         # reverse = np.asarray(reverse[beginr: endr])
         # return forward, reverse
 
-    def reads(self, bamreads: SeparatedReadsMeta, interval: Interval, five_slope: int, three_slope: int):
+    def reads(self, bamreads: SeparatedReadsMeta, interval: Interval, five_slope: int,
+              three_slope: int) -> IntervalReads:
         chr = interval.chrom
         if len(self._ndarrays) == 0:
             self.reread()
@@ -106,49 +110,17 @@ class ChIPseqReplica:
         forward, reverse = self._slice(forward, reverse, interval, five_slope, three_slope)
         return IntervalReads(forward, reverse)
 
-    def enrichment(self, interval: Interval, treatment_reads: int, control_reads: int, fragment_size: int, *,
-                   treatment=None, control=None):
+    def enrichment(self, interval: Interval, fragment_size: int):
         chr = interval.chrom
         chromlen = self.chrominfo[chr]
 
-        # 1. fetch reads if needed
-        if treatment is None:
-            treatment = self.reads(self.treatment, interval, fragment_size, 0)
-        if control is None:
-            control = self.reads(self.control, interval, 5000, 5000)
-
-        # 2. treatment pileup
-        treatment_ends, treatment_pileup = enrichment.pileup(treatment.forward, treatment.reverse,
-                                                             five_extension=0, three_extension=fragment_size,
-                                                             leftmost_coord=0, rightmost_coord=chromlen,
-                                                             scale=1.0, baseline=0.0)
-
-        # 4. control lambda
-        half_fragment = fragment_size // 2
-        cends, cpileup = enrichment.pileup(control.forward, control.reverse,
-                                           five_extension=half_fragment, three_extension=half_fragment,
-                                           leftmost_coord=0, rightmost_coord=chromlen, scale=1.0, baseline=0.0)
-        cends1k, clambda1k = enrichment.pileup(control.forward, control.reverse,
-                                               five_extension=500, three_extension=500,
-                                               leftmost_coord=0, rightmost_coord=chromlen,
-                                               scale=fragment_size / 1000, baseline=0.0)
-        cends10k, clambda10k = enrichment.pileup(control.forward, control.reverse,
-                                                 five_extension=5000, three_extension=5000,
-                                                 leftmost_coord=0, rightmost_coord=chromlen,
-                                                 scale=fragment_size / 10000, baseline=0.0)
-
-        background_lambda = control_reads * fragment_size / self.effective_genome_size
-        treatment_control_ratio = treatment_reads / control_reads
-
-        cends, clambda = enrichment.per_interval_max([cends, cends1k, cends10k], [cpileup, clambda1k, clambda10k],
-                                                     scale=treatment_control_ratio, baseline=background_lambda)
-
-        # 5. enrichment
-        enrich_ends, enrich_values = enrichment.enrichment(treatment_ends, treatment_pileup, cends, clambda,
-                                                           pseudocount=0.0)
-
-        # 6. dense vector
-        result = enrichment.todense(enrich_ends, enrich_values, interval.start, interval.end)
+        treatment = self.reads(self.treatment, interval, fragment_size, 0)
+        control = self.reads(self.control, interval, 5000, 5000)
+        enrich_ends, enrich_values = enrichment.endtoend(chromlen, fragment_size, self.effective_genome_size,
+                                                         self.treatment.numreads, self.control.numreads,
+                                                         treatment.forward, treatment.reverse,
+                                                         control.forward, control.reverse)
+        result = enrichment.todense(enrich_ends, enrich_values, np.int32(interval.start), np.int32(interval.end))
         return treatment, control, result
 
     def peaks(self, interval: Interval) -> np.ndarray:
